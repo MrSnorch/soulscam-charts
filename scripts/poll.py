@@ -41,13 +41,14 @@ def hour_key(dt):
     return dt.strftime("%Y-%m-%dT%H")
 
 
-def flush_hour(hour, points):
+def flush_hour(hour, points, final=False):
     if not points:
         return
     os.makedirs(HOURLY_DIR, exist_ok=True)
     path = os.path.join(HOURLY_DIR, f"{hour}.json.gz")
 
-    # Merge with existing file for this hour, if present (e.g. resumed run).
+    # Merge with existing file for this hour, if present (resumed run or
+    # an earlier partial flush of the same hour).
     existing = []
     if os.path.exists(path):
         with gzip.open(path, "rt") as f:
@@ -57,13 +58,17 @@ def flush_hour(hour, points):
     with gzip.open(path, "wt") as f:
         json.dump({"appid": APPID, "hour": hour, "points": merged}, f)
 
-    print(f"Flushed {len(points)} points -> docs/hourly/{hour}.json.gz ({len(merged)} total)")
+    tag = "final" if final else "partial"
+    print(f"Flushed {len(points)} points ({tag}) -> docs/hourly/{hour}.json.gz ({len(merged)} total)", flush=True)
 
 
 def main():
+    print(f"Starting poll loop: interval={POLL_INTERVAL_SEC}s, run_duration={RUN_DURATION_SEC}s", flush=True)
     start = time.time()
-    buffer = {}  # hour_key -> list of {ts, player_count}
+    buffer = {}  # hour_key -> list of {ts, player_count} not yet flushed
     current_hour = None
+    last_flush = start
+    FLUSH_INTERVAL_SEC = 300  # write partial data every 5 min so it shows up quickly
 
     while time.time() - start < RUN_DURATION_SEC:
         now = datetime.now(timezone.utc)
@@ -80,13 +85,18 @@ def main():
                 "ts": now.isoformat(),
                 "player_count": count,
             })
-            print(f"{now.isoformat()} player_count={count}")
+            print(f"{now.isoformat()} player_count={count}", flush=True)
+
+        if time.time() - last_flush >= FLUSH_INTERVAL_SEC:
+            flush_hour(current_hour, buffer.get(current_hour, []))
+            buffer[current_hour] = []
+            last_flush = time.time()
 
         time.sleep(POLL_INTERVAL_SEC)
 
     # Flush whatever's left for the current (partial) hour before exiting.
     if current_hour is not None:
-        flush_hour(current_hour, buffer.get(current_hour, []))
+        flush_hour(current_hour, buffer.get(current_hour, []), final=True)
 
 
 if __name__ == "__main__":

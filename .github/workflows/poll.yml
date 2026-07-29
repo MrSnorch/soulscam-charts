@@ -27,7 +27,7 @@ jobs:
 
       - name: Poll Steam API for ~5.5 hours, committing each hourly flush
         run: |
-          python3 scripts/poll.py &
+          python3 -u scripts/poll.py &
           POLL_PID=$!
 
           git config user.name "github-actions[bot]"
