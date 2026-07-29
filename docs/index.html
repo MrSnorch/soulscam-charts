@@ -173,7 +173,6 @@
 
 <header>
   <h1>Soulscam Tracker</h1>
-  <p>Soulbound: Online &middot; онлайн игроков во времени, по данным Steam API</p>
 </header>
 
 <div class="stats-wrap">
@@ -614,11 +613,26 @@ async function init() {
       '<div id="status">Не удалось загрузить recent.json</div>';
   }
 
-  if (recent.length) {
+  let points = [];
+  try {
+    points = await loadJSON('points.json');
+  } catch (e) {
+    document.getElementById('live-chart').innerHTML =
+      '<div id="status">Не удалось загрузить points.json</div>';
+  }
+
+  if (points.length) {
+    const lastPoint = points[points.length - 1];
+    document.getElementById('stat-now').textContent = lastPoint.player_count;
+    document.getElementById('stat-now-time').textContent =
+      new Date(lastPoint.ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  } else if (recent.length) {
     const last = recent[recent.length - 1];
     document.getElementById('stat-now').textContent = last.avg;
     document.getElementById('stat-now-time').textContent = last.hour.replace('T', ' ') + ':00 UTC';
+  }
 
+  if (recent.length) {
     const last24 = recent.slice(-24);
     document.getElementById('stat-peak24').textContent = Math.max(...last24.map(r => r.max));
 
@@ -652,12 +666,8 @@ async function init() {
     renderHourlyActivity(recent);
   }
 
-  try {
-    const points = await loadJSON('points.json');
+  if (points.length) {
     renderLive(points);
-  } catch (e) {
-    document.getElementById('live-chart').innerHTML =
-      '<div id="status">Не удалось загрузить points.json</div>';
   }
 }
 
