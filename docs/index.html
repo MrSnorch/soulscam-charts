@@ -187,6 +187,10 @@
     <div class="value mono" id="stat-peak24">&mdash;</div>
   </div>
   <div class="stat">
+    <div class="label">Минимум за 24ч</div>
+    <div class="value mono" id="stat-min24">&mdash;</div>
+  </div>
+  <div class="stat">
     <div class="label">Среднее за 24ч</div>
     <div class="value mono" id="stat-avg24">&mdash;</div>
     <div class="sub mono" id="stat-trend24">&mdash;</div>
@@ -194,6 +198,10 @@
   <div class="stat">
     <div class="label">Пик за всё время</div>
     <div class="value mono" id="stat-peak-all">&mdash;</div>
+  </div>
+  <div class="stat">
+    <div class="label">Минимум за всё время</div>
+    <div class="value mono" id="stat-min-all">&mdash;</div>
   </div>
   <div class="stat">
     <div class="label">Среднее за всё время</div>
@@ -635,6 +643,7 @@ async function init() {
   if (recent.length) {
     const last24 = recent.slice(-24);
     document.getElementById('stat-peak24').textContent = Math.max(...last24.map(r => r.max));
+    document.getElementById('stat-min24').textContent = Math.min(...last24.map(r => r.min));
 
     const avg24 = last24.reduce((s, r) => s + r.avg, 0) / last24.length;
     document.getElementById('stat-avg24').textContent = Math.round(avg24);
@@ -658,6 +667,7 @@ async function init() {
     }
 
     document.getElementById('stat-peak-all').textContent = Math.max(...recent.map(r => r.max));
+    document.getElementById('stat-min-all').textContent = Math.min(...recent.map(r => r.min));
     const avgAll = recent.reduce((s, r) => s + r.avg, 0) / recent.length;
     document.getElementById('stat-avg-all').textContent = Math.round(avgAll);
 
