@@ -45,9 +45,11 @@ jobs:
 
           wait $POLL_PID
 
-          # Rebuild the dashboard's aggregate and commit anything flushed at the end.
+          # Rebuild the dashboard's aggregate, refresh the SteamDB snapshot,
+          # and commit anything flushed at the end.
           python3 scripts/build-index.py
-          git add docs/hourly/ docs/recent.json
+          python3 scripts/update_snapshot.py
+          git add docs/hourly/ docs/recent.json docs/steamdb_snapshot.json
           git diff --cached --quiet || git commit -m "chore: player count $(date -u +'%Y-%m-%dT%H:%M') (final)"
           git pull --rebase --quiet || true
           git push --quiet || true

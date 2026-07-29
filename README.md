@@ -4,9 +4,12 @@
 
 ## Как это работает
 
-- `docs/steamdb_snapshot.json` — разовый статичный снимок с
-  https://steamdb.info/app/4369490/charts/. Заполняется вручную, скрипт его
-  не трогает и не парсит SteamDB повторно.
+- `docs/steamdb_snapshot.json` — снимок пиков со SteamDB
+  (https://steamdb.info/app/4369490/charts/), обновляется автоматически
+  скриптом `scripts/update_snapshot.py` в конце каждого запуска `poll.py`.
+  `peak_players_24h` берётся из последнего запроса; `peak_players_all_time`
+  накапливается как max(старое значение, новое из API), так как SteamDB
+  отдаёт максимум только за последние ~8 дней, а не за всё время.
 - `scripts/poll.py` — опрашивает
   `GetNumberOfCurrentPlayers` раз в минуту и раз в час пишет
   `docs/hourly/YYYY-MM-DDTHH.json.gz` с массивом точек `{ts, player_count}`.
@@ -31,9 +34,8 @@ Settings → Pages → Source: Deploy from a branch → `main` / `/docs`.
 
 1. Запушьте репозиторий на GitHub.
 2. Вручную запустите workflow "Poll Steam Player Count" (Actions → Run workflow)
-   один раз — дальше он будет перезапускать себя сам.
-3. Отдельно, один раз, соберите нужные данные с SteamDB и впишите их в
-   `docs/steamdb_snapshot.json`.
+   один раз — дальше он будет перезапускать себя сам. `docs/steamdb_snapshot.json`
+   обновится сам после первого запуска.
 
 ## Локальный тест
 
