@@ -122,6 +122,26 @@
   .axis-label { fill: var(--muted); font-size: 10px; }
   .gridline { stroke: var(--line); stroke-width: 1; }
 
+  .chart-wrap { position: relative; }
+  .hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3,3; opacity: 0; pointer-events: none; }
+  .hover-dot { opacity: 0; pointer-events: none; }
+  .tooltip {
+    position: absolute;
+    background: #1a1e25;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    pointer-events: none;
+    opacity: 0;
+    white-space: nowrap;
+    transform: translate(-50%, -100%);
+    margin-top: -10px;
+    z-index: 10;
+  }
+  .tooltip .tt-value { font-weight: 600; color: var(--text); }
+  .tooltip .tt-label { color: var(--muted); margin-top: 2px; }
+
   #status {
     color: var(--muted);
     font-size: 12px;
@@ -246,6 +266,86 @@ function pathD(coords) {
   return d.trim();
 }
 
+function attachTooltip(wrap, svg, series, xForIndex, count) {
+  // series: array of { coords, color, labelFor(i) -> {value, sub} }
+  const overlay = svgEl('rect', {
+    x: PAD.left, y: PAD.top,
+    width: W - PAD.left - PAD.right, height: H - PAD.top - PAD.bottom,
+    fill: 'transparent', style: 'cursor: crosshair;'
+  });
+  svg.appendChild(overlay);
+
+  const hoverLine = svgEl('line', { class: 'hover-line', x1: 0, x2: 0, y1: PAD.top, y2: H - PAD.bottom });
+  svg.appendChild(hoverLine);
+
+  const dots = series.map(s => {
+    const dot = svgEl('circle', { class: 'hover-dot', r: 3.5, fill: s.color });
+    svg.appendChild(dot);
+    return dot;
+  });
+
+  const tooltip = document.createElement('div');
+  tooltip.className = 'tooltip';
+  wrap.appendChild(tooltip);
+
+  function show(idx) {
+    const x = xForIndex(idx);
+    hoverLine.setAttribute('x1', x);
+    hoverLine.setAttribute('x2', x);
+    hoverLine.style.opacity = 1;
+
+    let lines = '';
+    let sharedSub = null;
+    series.forEach((s, si) => {
+      const c = s.coords[idx];
+      if (!c || c.y == null) { dots[si].style.opacity = 0; return; }
+      dots[si].setAttribute('cx', c.x);
+      dots[si].setAttribute('cy', c.y);
+      dots[si].style.opacity = 1;
+      const info = s.labelFor(idx);
+      lines += `<div><span class="tt-value" style="color:${s.color}">${info.value}</span>${info.name ? ' &middot; ' + info.name : ''}</div>`;
+      sharedSub = info.sub;
+    });
+    if (sharedSub != null) lines += `<div class="tt-label">${sharedSub}</div>`;
+    tooltip.innerHTML = lines;
+
+    // position tooltip in % of svg bounding box
+    const pct = (x / W) * 100;
+    tooltip.style.left = pct + '%';
+    const yVals = series.map((s, si) => s.coords[idx] && s.coords[idx].y).filter(v => v != null);
+    const topY = yVals.length ? Math.min(...yVals) : PAD.top;
+    tooltip.style.top = ((topY / H) * 100) + '%';
+    tooltip.style.opacity = 1;
+  }
+
+  function hide() {
+    hoverLine.style.opacity = 0;
+    dots.forEach(d => d.style.opacity = 0);
+    tooltip.style.opacity = 0;
+  }
+
+  overlay.addEventListener('mousemove', (e) => {
+    const rect = overlay.getBoundingClientRect();
+    const relX = e.clientX - rect.left;
+    const frac = Math.max(0, Math.min(1, relX / rect.width));
+    const idx = Math.round(frac * (count - 1));
+    show(idx);
+  });
+  overlay.addEventListener('mouseleave', hide);
+
+  // touch support
+  overlay.addEventListener('touchmove', (e) => {
+    const touch = e.touches[0];
+    const rect = overlay.getBoundingClientRect();
+    const relX = touch.clientX - rect.left;
+    const frac = Math.max(0, Math.min(1, relX / rect.width));
+    const idx = Math.round(frac * (count - 1));
+    show(idx);
+    e.preventDefault();
+  }, { passive: false });
+  overlay.addEventListener('touchend', hide);
+}
+
 function renderOverview(rows) {
   const container = document.getElementById('overview-chart');
   container.innerHTML = '';
@@ -273,7 +373,19 @@ function renderOverview(rows) {
   const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 });
   svg.appendChild(path);
 
-  container.appendChild(svg);
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  wrap.appendChild(svg);
+  container.appendChild(wrap);
+
+  attachTooltip(wrap, svg, [{
+    coords,
+    color: 'var(--accent)',
+    labelFor: i => ({
+      value: rows[i].avg,
+      sub: rows[i].hour.replace('T', ' ') + ':00 UTC (max ' + rows[i].max + ', min ' + rows[i].min + ')'
+    })
+  }], xForIndex, rows.length);
 }
 
 function renderLive(points) {
@@ -305,7 +417,19 @@ function renderLive(points) {
   const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5 });
   svg.appendChild(path);
 
-  container.appendChild(svg);
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  wrap.appendChild(svg);
+  container.appendChild(wrap);
+
+  attachTooltip(wrap, svg, [{
+    coords,
+    color: 'var(--accent)',
+    labelFor: i => ({
+      value: points[i].player_count,
+      sub: new Date(points[i].ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+    })
+  }], xForIndex, points.length);
 }
 
 function groupByDay(rows) {
@@ -354,7 +478,23 @@ function renderCompare(days) {
     svg.appendChild(svgEl('path', { d: pathD(coordsA), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 }));
     svg.appendChild(svgEl('path', { d: pathD(coordsB), fill: 'none', stroke: 'var(--warn)', 'stroke-width': 2, 'stroke-dasharray': '5,4' }));
 
-    container.appendChild(svg);
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    wrap.appendChild(svg);
+    container.appendChild(wrap);
+
+    attachTooltip(wrap, svg, [
+      {
+        coords: coordsA,
+        color: 'var(--accent)',
+        labelFor: i => ({ value: a[i], name: selA.value, sub: `${i}:00` })
+      },
+      {
+        coords: coordsB,
+        color: 'var(--warn)',
+        labelFor: i => ({ value: b[i], name: selB.value, sub: `${i}:00` })
+      }
+    ], xForIndex, 24);
   }
 
   selA.addEventListener('change', draw);
