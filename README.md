@@ -1,6 +1,6 @@
 # Soulscam Tracker
 
-Отслеживает онлайн игроков Roots of Embervault (appid 4369490) через Steam API.
+Отслеживает онлайн игроков Soulbound: Online (appid 4369490) через Steam API.
 
 ## Как это работает
 
