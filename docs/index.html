@@ -50,7 +50,7 @@
   }
   .stats {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 1px;
     background: var(--line);
     border: 1px solid var(--line);
@@ -59,7 +59,7 @@
   }
   .stat {
     background: var(--panel);
-    padding: 18px 24px;
+    padding: 18px 22px;
   }
   .stat .label {
     color: var(--muted);
@@ -78,6 +78,9 @@
     font-size: 11px;
     margin-top: 4px;
   }
+  .trend-up { color: var(--accent); }
+  .trend-down { color: #e6707a; }
+  .trend-flat { color: var(--muted); }
 
   main {
     padding: 24px;
@@ -184,6 +187,19 @@
     <div class="label">Пик за 24ч</div>
     <div class="value mono" id="stat-peak24">&mdash;</div>
   </div>
+  <div class="stat">
+    <div class="label">Среднее за 24ч</div>
+    <div class="value mono" id="stat-avg24">&mdash;</div>
+    <div class="sub mono" id="stat-trend24">&mdash;</div>
+  </div>
+  <div class="stat">
+    <div class="label">Пик за всё время</div>
+    <div class="value mono" id="stat-peak-all">&mdash;</div>
+  </div>
+  <div class="stat">
+    <div class="label">Среднее за всё время</div>
+    <div class="value mono" id="stat-avg-all">&mdash;</div>
+  </div>
 </div>
 </div>
 
@@ -211,6 +227,12 @@
       <select id="day-b"></select>
     </div>
     <div id="compare-chart"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Активность по часам суток</h2>
+    <p class="desc">Средний онлайн по часу дня (UTC), усреднено за всю собранную историю &mdash; показывает пик-часы</p>
+    <div id="hourly-chart"><div id="status">Загрузка данных&hellip;</div></div>
   </div>
 
 </main>
@@ -457,6 +479,67 @@ function groupByDay(rows) {
   return days;
 }
 
+function renderHourlyActivity(rows) {
+  const container = document.getElementById('hourly-chart');
+  container.innerHTML = '';
+  if (!rows.length) {
+    container.innerHTML = '<div id="status">Пока нет данных.</div>';
+    return;
+  }
+
+  // average avg-player-count per hour-of-day across all collected history
+  const sums = new Array(24).fill(0);
+  const counts = new Array(24).fill(0);
+  rows.forEach(r => {
+    const hour = parseInt(r.hour.slice(11, 13), 10);
+    sums[hour] += r.avg;
+    counts[hour] += 1;
+  });
+  const hourlyAvg = sums.map((s, h) => counts[h] ? s / counts[h] : null);
+
+  const maxVal = Math.max(...hourlyAvg.filter(v => v != null), 1);
+  const innerW = W - PAD.left - PAD.right;
+  const barGap = 3;
+  const barW = innerW / 24 - barGap;
+  const xForBar = h => PAD.left + (innerW / 24) * h;
+  const xForIndex = h => xForBar(h) + barW / 2; // center, for tooltip alignment
+
+  const svg = makeSvg();
+  const xLabels = [0, 6, 12, 18, 23].map(h => ({ x: xForIndex(h), label: `${h}:00` }));
+  drawGridAndAxes(svg, maxVal, xLabels);
+
+  const peakHour = hourlyAvg.reduce((best, v, h) => (v != null && (best === -1 || v > hourlyAvg[best])) ? h : best, -1);
+
+  const bars = [];
+  hourlyAvg.forEach((v, h) => {
+    if (v == null) return;
+    const y = scaleY(v, maxVal);
+    const isPeak = h === peakHour;
+    const rect = svgEl('rect', {
+      x: xForBar(h), y, width: barW, height: (H - PAD.bottom) - y,
+      rx: 2,
+      fill: isPeak ? 'var(--accent)' : 'var(--accent-dim)'
+    });
+    svg.appendChild(rect);
+    bars.push(rect);
+  });
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chart-wrap';
+  wrap.appendChild(svg);
+  container.appendChild(wrap);
+
+  const coords = hourlyAvg.map((v, h) => v == null ? { x: xForIndex(h), y: null } : { x: xForIndex(h), y: scaleY(v, maxVal) });
+  attachTooltip(wrap, svg, [{
+    coords,
+    color: 'var(--accent)',
+    labelFor: h => ({
+      value: hourlyAvg[h] != null ? Math.round(hourlyAvg[h]) : '—',
+      sub: `${h}:00&ndash;${(h + 1) % 24}:00 UTC` + (h === peakHour ? ' &middot; пик-час' : '')
+    })
+  }], xForIndex, 24);
+}
+
 function renderCompare(days) {
   const dayKeys = Object.keys(days).sort();
   const selA = document.getElementById('day-a');
@@ -539,8 +622,34 @@ async function init() {
     const last24 = recent.slice(-24);
     document.getElementById('stat-peak24').textContent = Math.max(...last24.map(r => r.max));
 
+    const avg24 = last24.reduce((s, r) => s + r.avg, 0) / last24.length;
+    document.getElementById('stat-avg24').textContent = Math.round(avg24);
+
+    // trend: compare current avg vs avg from ~24h ago (previous 24h window if available)
+    const prev24 = recent.slice(-48, -24);
+    const trendEl = document.getElementById('stat-trend24');
+    if (prev24.length) {
+      const prevAvg = prev24.reduce((s, r) => s + r.avg, 0) / prev24.length;
+      const diff = avg24 - prevAvg;
+      const pct = prevAvg > 0 ? (diff / prevAvg) * 100 : 0;
+      if (Math.abs(pct) < 1) {
+        trendEl.textContent = '≈ без изменений';
+        trendEl.className = 'sub mono trend-flat';
+      } else {
+        trendEl.textContent = (diff > 0 ? '▲ +' : '▼ ') + pct.toFixed(1) + '% к пред. суткам';
+        trendEl.className = 'sub mono ' + (diff > 0 ? 'trend-up' : 'trend-down');
+      }
+    } else {
+      trendEl.textContent = 'недостаточно истории';
+    }
+
+    document.getElementById('stat-peak-all').textContent = Math.max(...recent.map(r => r.max));
+    const avgAll = recent.reduce((s, r) => s + r.avg, 0) / recent.length;
+    document.getElementById('stat-avg-all').textContent = Math.round(avgAll);
+
     renderOverview(recent);
     renderCompare(groupByDay(recent));
+    renderHourlyActivity(recent);
   }
 
   try {
