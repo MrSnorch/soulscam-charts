@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ROE Player Tracker</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #12151a;
+    --line: #22262e;
+    --text: #d7dce2;
+    --muted: #6b7480;
+    --accent: #5ee6b0;
+    --accent-dim: #2c5c4c;
+    --warn: #e6b05e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+  }
+  .mono { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
+
+  header {
+    padding: 28px 24px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .stat {
+    background: var(--panel);
+    padding: 18px 20px;
+  }
+  .stat .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+  }
+  .stat .value {
+    font-size: 26px;
+    font-weight: 600;
+  }
+  .stat.live .value { color: var(--accent); }
+  .stat .sub {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 4px;
+  }
+
+  main {
+    padding: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .panel h2 {
+    margin: 0 0 4px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .panel .desc {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 0 0 16px;
+  }
+
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  select, input[type="date"] {
+    background: #191c22;
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+  }
+
+  svg { display: block; width: 100%; height: auto; }
+  .axis-label { fill: var(--muted); font-size: 10px; }
+  .gridline { stroke: var(--line); stroke-width: 1; }
+
+  #status {
+    color: var(--muted);
+    font-size: 12px;
+    padding: 40px 20px;
+    text-align: center;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ROE Player Tracker</h1>
+  <p>Roots of Embervault &middot; онлайн игроков во времени, по данным Steam API</p>
+</header>
+
+<div class="stats" id="stats">
+  <div class="stat live">
+    <div class="label">Сейчас онлайн</div>
+    <div class="value mono" id="stat-now">&mdash;</div>
+    <div class="sub" id="stat-now-time">&mdash;</div>
+  </div>
+  <div class="stat">
+    <div class="label">Пик за 24ч</div>
+    <div class="value mono" id="stat-peak24">&mdash;</div>
+  </div>
+  <div class="stat">
+    <div class="label">Пик за всё время</div>
+    <div class="value mono" id="stat-peak-all">&mdash;</div>
+    <div class="sub" id="stat-peak-all-date">SteamDB</div>
+  </div>
+</div>
+
+<main>
+
+  <div class="panel">
+    <h2>Общая динамика</h2>
+    <p class="desc">Среднее число игроков по часам за весь собранный период</p>
+    <div id="overview-chart"><div id="status">Загрузка данных&hellip;</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Сравнение дней</h2>
+    <p class="desc">Наложение двух дней по часам (0&ndash;23) &mdash; удобно смотреть тенденцию</p>
+    <div class="controls">
+      <span><span class="legend-swatch" style="background:var(--accent)"></span>День A:</span>
+      <select id="day-a"></select>
+      <span><span class="legend-swatch" style="background:var(--warn)"></span>День B:</span>
+      <select id="day-b"></select>
+    </div>
+    <div id="compare-chart"></div>
+  </div>
+
+</main>
+
+<footer>Обновляется автоматически из docs/hourly/ &middot; данные: Steam Web API</footer>
+
+<script>
+const W = 1000, H = 300, PAD = { top: 16, right: 16, bottom: 28, left: 44 };
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+function makeSvg() {
+  return svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet' });
+}
+
+function scaleY(value, max) {
+  const innerH = H - PAD.top - PAD.bottom;
+  if (max <= 0) return H - PAD.bottom;
+  return PAD.top + innerH * (1 - value / max);
+}
+
+function drawGridAndAxes(svg, maxVal, xLabels) {
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top - PAD.bottom;
+
+  // horizontal gridlines (4 steps)
+  for (let i = 0; i <= 4; i++) {
+    const v = Math.round(maxVal * i / 4);
+    const y = scaleY(v, maxVal);
+    svg.appendChild(svgEl('line', { x1: PAD.left, x2: W - PAD.right, y1: y, y2: y, class: 'gridline' }));
+    const t = svgEl('text', { x: PAD.left - 8, y: y + 3, class: 'axis-label', 'text-anchor': 'end' });
+    t.textContent = v;
+    svg.appendChild(t);
+  }
+
+  // x labels
+  xLabels.forEach(({ x, label }) => {
+    const t = svgEl('text', { x, y: H - PAD.bottom + 16, class: 'axis-label', 'text-anchor': 'middle' });
+    t.textContent = label;
+    svg.appendChild(t);
+  });
+}
+
+function linePath(points, xForIndex, maxVal) {
+  return points.map((p, i) => {
+    const x = xForIndex(i);
+    const y = p == null ? null : scaleY(p, maxVal);
+    return { x, y };
+  });
+}
+
+function pathD(coords) {
+  let d = '';
+  let started = false;
+  coords.forEach(c => {
+    if (c.y == null) { started = false; return; }
+    d += (started ? 'L' : 'M') + c.x.toFixed(1) + ',' + c.y.toFixed(1) + ' ';
+    started = true;
+  });
+  return d.trim();
+}
+
+function renderOverview(rows) {
+  const container = document.getElementById('overview-chart');
+  container.innerHTML = '';
+  if (!rows.length) {
+    container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого часа сбора.</div>';
+    return;
+  }
+
+  const maxVal = Math.max(...rows.map(r => r.max), 1);
+  const innerW = W - PAD.left - PAD.right;
+  const xForIndex = i => PAD.left + innerW * (rows.length === 1 ? 0.5 : i / (rows.length - 1));
+
+  const svg = makeSvg();
+
+  // x labels: show ~6 evenly spaced dates
+  const labelCount = Math.min(6, rows.length);
+  const xLabels = [];
+  for (let i = 0; i < labelCount; i++) {
+    const idx = Math.round(i * (rows.length - 1) / Math.max(1, labelCount - 1));
+    xLabels.push({ x: xForIndex(idx), label: rows[idx].hour.slice(5, 13).replace('T', ' ') });
+  }
+  drawGridAndAxes(svg, maxVal, xLabels);
+
+  const coords = linePath(rows.map(r => r.avg), xForIndex, maxVal);
+  const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 });
+  svg.appendChild(path);
+
+  container.appendChild(svg);
+}
+
+function groupByDay(rows) {
+  const days = {};
+  rows.forEach(r => {
+    const day = r.hour.slice(0, 10);
+    const hour = parseInt(r.hour.slice(11, 13), 10);
+    if (!days[day]) days[day] = new Array(24).fill(null);
+    days[day][hour] = r.avg;
+  });
+  return days;
+}
+
+function renderCompare(days) {
+  const dayKeys = Object.keys(days).sort();
+  const selA = document.getElementById('day-a');
+  const selB = document.getElementById('day-b');
+  selA.innerHTML = dayKeys.map(d => `<option value="${d}">${d}</option>`).join('');
+  selB.innerHTML = dayKeys.map(d => `<option value="${d}">${d}</option>`).join('');
+
+  if (dayKeys.length >= 2) {
+    selA.value = dayKeys[dayKeys.length - 2]; // yesterday
+    selB.value = dayKeys[dayKeys.length - 1]; // today
+  } else if (dayKeys.length === 1) {
+    selA.value = dayKeys[0];
+    selB.value = dayKeys[0];
+  }
+
+  function draw() {
+    const container = document.getElementById('compare-chart');
+    container.innerHTML = '';
+    const a = days[selA.value] || new Array(24).fill(null);
+    const b = days[selB.value] || new Array(24).fill(null);
+
+    const maxVal = Math.max(...a.filter(v => v != null), ...b.filter(v => v != null), 1);
+    const innerW = W - PAD.left - PAD.right;
+    const xForIndex = i => PAD.left + innerW * i / 23;
+
+    const svg = makeSvg();
+    const xLabels = [0, 6, 12, 18, 23].map(h => ({ x: xForIndex(h), label: `${h}:00` }));
+    drawGridAndAxes(svg, maxVal, xLabels);
+
+    const coordsA = linePath(a, xForIndex, maxVal);
+    const coordsB = linePath(b, xForIndex, maxVal);
+
+    svg.appendChild(svgEl('path', { d: pathD(coordsA), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 }));
+    svg.appendChild(svgEl('path', { d: pathD(coordsB), fill: 'none', stroke: 'var(--warn)', 'stroke-width': 2, 'stroke-dasharray': '5,4' }));
+
+    container.appendChild(svg);
+  }
+
+  selA.addEventListener('change', draw);
+  selB.addEventListener('change', draw);
+  draw();
+}
+
+async function loadJSON(path) {
+  const res = await fetch(path, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  return res.json();
+}
+
+async function init() {
+  let recent = [];
+  try {
+    recent = await loadJSON('recent.json');
+  } catch (e) {
+    document.getElementById('overview-chart').innerHTML =
+      '<div id="status">Не удалось загрузить recent.json</div>';
+  }
+
+  if (recent.length) {
+    const last = recent[recent.length - 1];
+    document.getElementById('stat-now').textContent = last.avg;
+    document.getElementById('stat-now-time').textContent = last.hour.replace('T', ' ') + ':00 UTC';
+
+    const last24 = recent.slice(-24);
+    document.getElementById('stat-peak24').textContent = Math.max(...last24.map(r => r.max));
+
+    renderOverview(recent);
+    renderCompare(groupByDay(recent));
+  }
+
+  try {
+    const snap = await loadJSON('steamdb_snapshot.json');
+    if (snap.peak_players_all_time != null) {
+      document.getElementById('stat-peak-all').textContent = snap.peak_players_all_time;
+    }
+    if (snap.captured_at) {
+      document.getElementById('stat-peak-all-date').textContent =
+        'SteamDB, ' + snap.captured_at.slice(0, 10);
+    }
+  } catch (e) {
+    // snapshot not filled in yet — leave placeholder
+  }
+}
+
+init();
+</script>
+</body>
+</html>
