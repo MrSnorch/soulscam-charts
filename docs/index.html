@@ -159,6 +159,12 @@
 <main>
 
   <div class="panel">
+    <h2>Live (каждые ~5 минут)</h2>
+    <p class="desc">Все собранные точки без агрегации по часам</p>
+    <div id="live-chart"><div id="status">Загрузка данных&hellip;</div></div>
+  </div>
+
+  <div class="panel">
     <h2>Общая динамика</h2>
     <p class="desc">Среднее число игроков по часам за весь собранный период</p>
     <div id="overview-chart"><div id="status">Загрузка данных&hellip;</div></div>
@@ -270,6 +276,38 @@ function renderOverview(rows) {
   container.appendChild(svg);
 }
 
+function renderLive(points) {
+  const container = document.getElementById('live-chart');
+  container.innerHTML = '';
+  if (!points.length) {
+    container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого флаша.</div>';
+    return;
+  }
+
+  const values = points.map(p => p.player_count);
+  const maxVal = Math.max(...values, 1);
+  const innerW = W - PAD.left - PAD.right;
+  const xForIndex = i => PAD.left + innerW * (points.length === 1 ? 0.5 : i / (points.length - 1));
+
+  const svg = makeSvg();
+
+  const labelCount = Math.min(6, points.length);
+  const xLabels = [];
+  for (let i = 0; i < labelCount; i++) {
+    const idx = Math.round(i * (points.length - 1) / Math.max(1, labelCount - 1));
+    const d = new Date(points[idx].ts);
+    const label = d.toISOString().slice(5, 16).replace('T', ' ');
+    xLabels.push({ x: xForIndex(idx), label });
+  }
+  drawGridAndAxes(svg, maxVal, xLabels);
+
+  const coords = linePath(values, xForIndex, maxVal);
+  const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5 });
+  svg.appendChild(path);
+
+  container.appendChild(svg);
+}
+
 function groupByDay(rows) {
   const days = {};
   rows.forEach(r => {
@@ -349,6 +387,14 @@ async function init() {
 
     renderOverview(recent);
     renderCompare(groupByDay(recent));
+  }
+
+  try {
+    const points = await loadJSON('points.json');
+    renderLive(points);
+  } catch (e) {
+    document.getElementById('live-chart').innerHTML =
+      '<div id="status">Не удалось загрузить points.json</div>';
   }
 }
 
