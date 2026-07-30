@@ -48,9 +48,33 @@
     margin: 20px auto 0;
     padding: 0 24px;
   }
+  .stat-now-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 20px 24px;
+    margin-bottom: 12px;
+  }
+  .stat-now-card .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+  }
+  .stat-now-card .value {
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .stat-now-card .sub {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 4px;
+  }
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 1px;
     background: var(--line);
     border: 1px solid var(--line);
@@ -167,6 +191,13 @@
     font-size: 11px;
     padding: 20px;
   }
+
+  @media (max-width: 780px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 420px) {
+    .stats { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -176,16 +207,12 @@
 </header>
 
 <div class="stats-wrap">
+<div class="stat-now-card">
+  <div class="label">Сейчас онлайн</div>
+  <div class="value mono" id="stat-now">&mdash;</div>
+  <div class="sub" id="stat-now-time">&mdash;</div>
+</div>
 <div class="stats" id="stats">
-  <div class="stat live">
-    <div class="label">Сейчас онлайн</div>
-    <div class="value mono" id="stat-now">&mdash;</div>
-    <div class="sub" id="stat-now-time">&mdash;</div>
-  </div>
-  <div class="stat">
-    <div class="label">Пик за 24ч</div>
-    <div class="value mono" id="stat-peak24">&mdash;</div>
-  </div>
   <div class="stat">
     <div class="label">Минимум за 24ч</div>
     <div class="value mono" id="stat-min24">&mdash;</div>
@@ -196,8 +223,8 @@
     <div class="sub mono" id="stat-trend24">&mdash;</div>
   </div>
   <div class="stat">
-    <div class="label">Пик за всё время</div>
-    <div class="value mono" id="stat-peak-all">&mdash;</div>
+    <div class="label">Пик за 24ч</div>
+    <div class="value mono" id="stat-peak24">&mdash;</div>
   </div>
   <div class="stat">
     <div class="label">Минимум за всё время</div>
@@ -206,6 +233,10 @@
   <div class="stat">
     <div class="label">Среднее за всё время</div>
     <div class="value mono" id="stat-avg-all">&mdash;</div>
+  </div>
+  <div class="stat">
+    <div class="label">Пик за всё время</div>
+    <div class="value mono" id="stat-peak-all">&mdash;</div>
   </div>
 </div>
 </div>
