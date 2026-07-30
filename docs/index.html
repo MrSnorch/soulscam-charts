@@ -49,11 +49,8 @@
     padding: 0 24px;
   }
   .stat-now-card {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 20px 24px;
-    margin-bottom: 12px;
+    text-align: right;
+    flex-shrink: 0;
   }
   .stat-now-card .label {
     color: var(--muted);
@@ -63,15 +60,25 @@
     margin-bottom: 6px;
   }
   .stat-now-card .value {
-    font-size: 36px;
+    font-size: 30px;
     font-weight: 700;
     color: var(--accent);
+    line-height: 1;
   }
   .stat-now-card .sub {
     color: var(--muted);
     font-size: 11px;
-    margin-top: 4px;
+    margin-top: 6px;
   }
+  .panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .panel-head h2 { margin: 0 0 4px; }
+  .panel-head .desc { margin: 0; }
   .stats {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -198,6 +205,10 @@
   @media (max-width: 420px) {
     .stats { grid-template-columns: 1fr; }
   }
+  @media (max-width: 520px) {
+    .panel-head { flex-wrap: wrap; }
+    .stat-now-card { text-align: left; }
+  }
 </style>
 </head>
 <body>
@@ -207,11 +218,6 @@
 </header>
 
 <div class="stats-wrap">
-<div class="stat-now-card">
-  <div class="label">Сейчас онлайн</div>
-  <div class="value mono" id="stat-now">&mdash;</div>
-  <div class="sub" id="stat-now-time">&mdash;</div>
-</div>
 <div class="stats" id="stats">
   <div class="stat">
     <div class="label">Минимум за 24ч</div>
@@ -244,8 +250,17 @@
 <main>
 
   <div class="panel">
-    <h2>Live (каждые ~5 минут)</h2>
-    <p class="desc">Все собранные точки без агрегации по часам</p>
+    <div class="panel-head">
+      <div>
+        <h2>Live (каждые ~5 минут)</h2>
+        <p class="desc">Все собранные точки без агрегации по часам</p>
+      </div>
+      <div class="stat-now-card">
+        <div class="label">Сейчас онлайн</div>
+        <div class="value mono" id="stat-now">&mdash;</div>
+        <div class="sub" id="stat-now-time">&mdash;</div>
+      </div>
+    </div>
     <div id="live-chart"><div id="status">Загрузка данных&hellip;</div></div>
   </div>
 
