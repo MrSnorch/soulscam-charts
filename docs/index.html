@@ -59,6 +59,11 @@
     letter-spacing: 0.6px;
     margin-bottom: 6px;
   }
+  .stat-now-card .label #stat-now-time {
+    text-transform: none;
+    letter-spacing: normal;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
   .stat-now-card .value {
     font-size: 30px;
     font-weight: 700;
@@ -256,9 +261,8 @@
         <p class="desc">Все собранные точки без агрегации по часам</p>
       </div>
       <div class="stat-now-card">
-        <div class="label">Сейчас онлайн</div>
+        <div class="label">Сейчас онлайн <span id="stat-now-time">&mdash;</span></div>
         <div class="value mono" id="stat-now">&mdash;</div>
-        <div class="sub" id="stat-now-time">&mdash;</div>
       </div>
     </div>
     <div id="live-chart"><div id="status">Загрузка данных&hellip;</div></div>
@@ -658,6 +662,17 @@ async function loadJSON(path) {
   return res.json();
 }
 
+function formatKyivTime(date) {
+  // Europe/Kyiv, DST-aware, formatted as YYYY-MM-DD HH:MM
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(date);
+  const get = type => parts.find(p => p.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+}
+
 async function init() {
   let recent = [];
   try {
@@ -679,11 +694,12 @@ async function init() {
     const lastPoint = points[points.length - 1];
     document.getElementById('stat-now').textContent = lastPoint.player_count;
     document.getElementById('stat-now-time').textContent =
-      new Date(lastPoint.ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+      formatKyivTime(new Date(lastPoint.ts)) + ' (Киев)';
   } else if (recent.length) {
     const last = recent[recent.length - 1];
     document.getElementById('stat-now').textContent = last.avg;
-    document.getElementById('stat-now-time').textContent = last.hour.replace('T', ' ') + ':00 UTC';
+    document.getElementById('stat-now-time').textContent =
+      formatKyivTime(new Date(last.hour + ':00:00Z')) + ' (Киев)';
   }
 
   if (recent.length) {
