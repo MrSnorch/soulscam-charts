@@ -196,10 +196,50 @@
   }
   .zoom-reset-btn:hover { color: var(--text); border-color: var(--muted); }
   .zoom-reset-btn.visible { display: inline-block; }
-  .zoom-hint {
+
+  .zoom-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .zoom-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .zoom-slider-row .slider-label {
     color: var(--muted);
     font-size: 11px;
-    margin: -10px 0 12px;
+    width: 62px;
+    flex-shrink: 0;
+  }
+  .zoom-slider-row input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line);
+    outline: none;
+  }
+  .zoom-slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+  .zoom-slider-row input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
   }
 
   svg { display: block; width: 100%; height: auto; }
@@ -207,8 +247,6 @@
   .gridline { stroke: var(--line); stroke-width: 1; }
 
   .chart-wrap { position: relative; }
-  .chart-wrap.zoomable { cursor: grab; }
-  .chart-wrap.zoomable.dragging { cursor: grabbing; }
   .hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3,3; opacity: 0; pointer-events: none; }
   .hover-dot { opacity: 0; pointer-events: none; }
   .tooltip {
@@ -307,7 +345,16 @@
       <button class="zoom-reset-btn" id="live-zoom-reset">Сбросить зум</button>
     </div>
     <div id="live-chart"><div id="status">Загрузка данных&hellip;</div></div>
-    <p class="zoom-hint">Колесо мыши / щипок — зум, перетаскивание — панорама</p>
+    <div class="zoom-sliders">
+      <div class="zoom-slider-row">
+        <span class="slider-label">Масштаб</span>
+        <input type="range" id="live-zoom-slider" min="1" max="100" value="100">
+      </div>
+      <div class="zoom-slider-row">
+        <span class="slider-label">Позиция</span>
+        <input type="range" id="live-pos-slider" min="0" max="100" value="100">
+      </div>
+    </div>
   </div>
 
   <div class="panel">
@@ -318,7 +365,16 @@
       <button class="zoom-reset-btn" id="overview-zoom-reset">Сбросить зум</button>
     </div>
     <div id="overview-chart"><div id="status">Загрузка данных&hellip;</div></div>
-    <p class="zoom-hint">Колесо мыши / щипок — зум, перетаскивание — панорама</p>
+    <div class="zoom-sliders">
+      <div class="zoom-slider-row">
+        <span class="slider-label">Масштаб</span>
+        <input type="range" id="overview-zoom-slider" min="1" max="100" value="100">
+      </div>
+      <div class="zoom-slider-row">
+        <span class="slider-label">Позиция</span>
+        <input type="range" id="overview-pos-slider" min="0" max="100" value="100">
+      </div>
+    </div>
   </div>
 
   <div class="panel">
@@ -475,26 +531,23 @@ function attachTooltip(wrap, svg, series, xForIndex, count, overlay) {
   });
   overlay.addEventListener('mouseleave', hide);
 
-  // Basic touch support for charts that don't have zoom/pan attached
-  // (attachZoomPan handles touch itself and passes overlay in, so this
-  // only fires standalone when no zoom overlay owns these events).
-  if (!overlay.getAttribute('data-zoom-owned')) {
-    overlay.style.touchAction = 'pan-y';
-    overlay.addEventListener('touchstart', (e) => {
-      const rect = overlay.getBoundingClientRect();
-      const relX = e.touches[0].clientX - rect.left;
-      const frac = Math.max(0, Math.min(1, relX / rect.width));
-      show(Math.round(frac * (count - 1)));
-    }, { passive: true });
-    overlay.addEventListener('touchmove', (e) => {
-      const rect = overlay.getBoundingClientRect();
-      const relX = e.touches[0].clientX - rect.left;
-      const frac = Math.max(0, Math.min(1, relX / rect.width));
-      show(Math.round(frac * (count - 1)));
-      e.preventDefault();
-    }, { passive: false });
-    overlay.addEventListener('touchend', hide);
-  }
+  // Simple tap/drag-to-inspect on touch — no zoom/pan gestures here,
+  // that's handled separately by the zoom/position sliders.
+  overlay.style.touchAction = 'pan-y';
+  overlay.addEventListener('touchstart', (e) => {
+    const rect = overlay.getBoundingClientRect();
+    const relX = e.touches[0].clientX - rect.left;
+    const frac = Math.max(0, Math.min(1, relX / rect.width));
+    show(Math.round(frac * (count - 1)));
+  }, { passive: true });
+  overlay.addEventListener('touchmove', (e) => {
+    const rect = overlay.getBoundingClientRect();
+    const relX = e.touches[0].clientX - rect.left;
+    const frac = Math.max(0, Math.min(1, relX / rect.width));
+    show(Math.round(frac * (count - 1)));
+    e.preventDefault();
+  }, { passive: false });
+  overlay.addEventListener('touchend', hide);
 
   return {
     show: idx => show(idx),
@@ -504,139 +557,38 @@ function attachTooltip(wrap, svg, series, xForIndex, count, overlay) {
 }
 
 // --- Zoom/pan for time-series line charts -----------------------------
-// Keeps a [startFrac, endFrac] window (0..1) into the full data array and
-// re-renders only that slice.
-// Desktop: wheel = zoom around cursor, drag = pan.
-// Touch: two-finger pinch = zoom, one finger = move the tooltip (panning
-// with one finger would fight with reading the tooltip, so we don't).
-// tooltipApiRef is a plain object whose .current gets set to the tooltip
-// API once attachTooltip runs (it's attached after this, on the same
-// overlay), so touch handlers registered here can still reach it.
-function attachZoomPan(wrap, svg, state, redraw, tooltipApiRef) {
-  wrap.classList.add('zoomable');
-  const overlay = svgEl('rect', {
-    x: PAD.left, y: PAD.top,
-    width: W - PAD.left - PAD.right, height: H - PAD.top - PAD.bottom,
-    fill: 'transparent', style: 'cursor: crosshair; touch-action: none;'
-  });
-  overlay.setAttribute('data-zoom-owned', '1');
-  svg.appendChild(overlay);
-
-  function clampWindow(start, end) {
-    let len = end - start;
-    len = Math.max(state.minWindow, Math.min(1, len));
-    end = start + len;
-    if (start < 0) { start = 0; end = start + len; }
-    if (end > 1) { end = 1; start = end - len; }
-    return [start, end];
-  }
-
-  function zoomAt(fracX, factor) {
-    const cur = fracX; // 0..1 position within current window
-    const abs = state.start + cur * (state.end - state.start);
-    let newLen = (state.end - state.start) * factor;
-    newLen = Math.max(state.minWindow, Math.min(1, newLen));
-    let newStart = abs - cur * newLen;
-    let newEnd = newStart + newLen;
-    [newStart, newEnd] = clampWindow(newStart, newEnd);
-    state.start = newStart;
-    state.end = newEnd;
-    redraw();
-  }
-
-  overlay.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const rect = overlay.getBoundingClientRect();
-    const fracX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const factor = e.deltaY > 0 ? 1.15 : 0.87;
-    zoomAt(fracX, factor);
-  }, { passive: false });
-
-  // drag to pan (mouse)
-  let dragging = false, dragStartX = 0, dragStartWin = [0, 1];
-  overlay.addEventListener('mousedown', (e) => {
-    dragging = true;
-    dragStartX = e.clientX;
-    dragStartWin = [state.start, state.end];
-    wrap.classList.add('dragging');
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const rect = overlay.getBoundingClientRect();
-    const dxFrac = (e.clientX - dragStartX) / rect.width;
-    const len = dragStartWin[1] - dragStartWin[0];
-    let start = dragStartWin[0] - dxFrac * len;
-    let end = start + len;
-    [start, end] = clampWindow(start, end);
+// --- Zoom via sliders --------------------------------------------------
+// Two <input type="range"> elements control a [start, end] window (0..1)
+// into the full data array: "zoom" sets the window width, "position" sets
+// where that window sits. Deliberately no drag/wheel/pinch gestures on
+// the chart itself — those felt jumpy on mobile. Sliders are precise and
+// behave identically on touch and desktop.
+function setupSliderZoom(zoomSlider, posSlider, state, redraw) {
+  function apply() {
+    const zoomPct = Number(zoomSlider.value); // 1..100, 100 = fully zoomed out
+    const len = Math.max(state.minWindow, zoomPct / 100);
+    const posPct = Number(posSlider.value); // 0..100, position of window start within available range
+    const maxStart = Math.max(0, 1 - len);
+    const start = (posPct / 100) * maxStart;
     state.start = start;
-    state.end = end;
+    state.end = Math.min(1, start + len);
+    posSlider.disabled = len >= 1;
     redraw();
-  });
-  window.addEventListener('mouseup', () => {
-    if (dragging) { dragging = false; wrap.classList.remove('dragging'); }
-  });
+  }
 
-  // touch: one finger = tooltip only, two fingers = pinch zoom, two-finger
-  // drag also pans (lets you zoom+reposition in one gesture).
-  let touchStartDist = null, touchStartWin = [0, 1], touchMidXStart = null;
-  overlay.addEventListener('touchstart', (e) => {
-    if (e.touches.length === 2) {
-      if (tooltipApiRef.current) tooltipApiRef.current.hide();
-      touchStartDist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY
-      );
-      touchMidXStart = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      touchStartWin = [state.start, state.end];
-    } else if (e.touches.length === 1 && tooltipApiRef.current) {
-      const rect = overlay.getBoundingClientRect();
-      const relX = e.touches[0].clientX - rect.left;
-      const frac = Math.max(0, Math.min(1, relX / rect.width));
-      tooltipApiRef.current.showFrac(frac);
+  zoomSlider.addEventListener('input', apply);
+  posSlider.addEventListener('input', apply);
+
+  return {
+    // Sync slider positions from an externally-set state (e.g. range buttons)
+    syncFromState() {
+      const len = state.end - state.start;
+      zoomSlider.value = Math.round(len * 100);
+      const maxStart = Math.max(0, 1 - len);
+      posSlider.value = maxStart > 0 ? Math.round((state.start / maxStart) * 100) : 100;
+      posSlider.disabled = len >= 1;
     }
-  }, { passive: true });
-
-  overlay.addEventListener('touchmove', (e) => {
-    const rect = overlay.getBoundingClientRect();
-    if (e.touches.length === 2 && touchStartDist != null) {
-      const dist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY
-      );
-      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const factor = touchStartDist / Math.max(dist, 1);
-      // zoom anchored at the initial pinch midpoint...
-      const fracX = Math.max(0, Math.min(1, (touchMidXStart - rect.left) / rect.width));
-      const abs = touchStartWin[0] + fracX * (touchStartWin[1] - touchStartWin[0]);
-      let newLen = (touchStartWin[1] - touchStartWin[0]) * factor;
-      newLen = Math.max(state.minWindow, Math.min(1, newLen));
-      let newStart = abs - fracX * newLen;
-      // ...then also pan by how far the midpoint has moved
-      const dxFrac = (midX - touchMidXStart) / rect.width;
-      newStart -= dxFrac * newLen;
-      let newEnd = newStart + newLen;
-      [newStart, newEnd] = clampWindow(newStart, newEnd);
-      state.start = newStart;
-      state.end = newEnd;
-      redraw();
-      e.preventDefault();
-    } else if (e.touches.length === 1 && tooltipApiRef.current) {
-      const relX = e.touches[0].clientX - rect.left;
-      const frac = Math.max(0, Math.min(1, relX / rect.width));
-      tooltipApiRef.current.showFrac(frac);
-      e.preventDefault();
-    }
-  }, { passive: false });
-
-  overlay.addEventListener('touchend', (e) => {
-    if (e.touches.length === 0) {
-      touchStartDist = null;
-      touchMidXStart = null;
-      if (tooltipApiRef.current) tooltipApiRef.current.hide();
-    }
-  });
-
-  return overlay;
+  };
 }
 
 function setupRangeControls(btnContainer, resetBtn, ranges, state, onChange) {
@@ -672,6 +624,8 @@ function renderOverview(rows) {
   const container = document.getElementById('overview-chart');
   const rangeBtns = document.getElementById('overview-range-btns');
   const resetBtn = document.getElementById('overview-zoom-reset');
+  const zoomSlider = document.getElementById('overview-zoom-slider');
+  const posSlider = document.getElementById('overview-pos-slider');
   container.innerHTML = '';
   if (!rows.length) {
     container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого часа сбора.</div>';
@@ -687,6 +641,7 @@ function renderOverview(rows) {
     { label: 'Всё', start: 0, end: 1 }
   ];
   const state = { start: 0, end: 1, minWindow: Math.min(1, 6 / totalHours) };
+  const slider = setupSliderZoom(zoomSlider, posSlider, state, draw);
 
   function draw() {
     container.innerHTML = '';
@@ -717,23 +672,22 @@ function renderOverview(rows) {
     wrap.appendChild(svg);
     container.appendChild(wrap);
 
-    const tooltipApiRef = {};
-    const overlay = attachZoomPan(wrap, svg, state, draw, tooltipApiRef);
-    tooltipApiRef.current = attachTooltip(wrap, svg, [{
+    attachTooltip(wrap, svg, [{
       coords,
       color: 'var(--accent)',
       labelFor: i => ({
         value: slice[i].avg,
         sub: slice[i].hour.replace('T', ' ') + ':00 UTC (max ' + slice[i].max + ', min ' + slice[i].min + ')'
       })
-    }], xForIndex, slice.length, overlay);
+    }], xForIndex, slice.length);
 
     resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
 
-  setupRangeControls(rangeBtns, resetBtn, ranges, state, draw);
+  setupRangeControls(rangeBtns, resetBtn, ranges, state, () => { slider.syncFromState(); draw(); });
   // default active = "Всё"
   rangeBtns.children[rangeBtns.children.length - 1].classList.add('active');
+  slider.syncFromState();
   draw();
 }
 
@@ -741,6 +695,8 @@ function renderLive(points) {
   const container = document.getElementById('live-chart');
   const rangeBtns = document.getElementById('live-range-btns');
   const resetBtn = document.getElementById('live-zoom-reset');
+  const zoomSlider = document.getElementById('live-zoom-slider');
+  const posSlider = document.getElementById('live-pos-slider');
   container.innerHTML = '';
   if (!points.length) {
     container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого флаша.</div>';
@@ -758,6 +714,7 @@ function renderLive(points) {
     { label: 'Всё', start: 0, end: 1 }
   ];
   const state = { start: 0, end: 1, minWindow: Math.min(1, 10 / points.length) };
+  const slider = setupSliderZoom(zoomSlider, posSlider, state, draw);
 
   function draw() {
     container.innerHTML = '';
@@ -791,22 +748,21 @@ function renderLive(points) {
     wrap.appendChild(svg);
     container.appendChild(wrap);
 
-    const tooltipApiRef = {};
-    const overlay = attachZoomPan(wrap, svg, state, draw, tooltipApiRef);
-    tooltipApiRef.current = attachTooltip(wrap, svg, [{
+    attachTooltip(wrap, svg, [{
       coords,
       color: 'var(--accent)',
       labelFor: i => ({
         value: slice[i].player_count,
         sub: new Date(slice[i].ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
       })
-    }], xForIndex, slice.length, overlay);
+    }], xForIndex, slice.length);
 
     resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
 
-  setupRangeControls(rangeBtns, resetBtn, ranges, state, draw);
+  setupRangeControls(rangeBtns, resetBtn, ranges, state, () => { slider.syncFromState(); draw(); });
   rangeBtns.children[rangeBtns.children.length - 1].classList.add('active');
+  slider.syncFromState();
   draw();
 }
 
