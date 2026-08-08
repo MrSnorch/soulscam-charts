@@ -596,8 +596,32 @@ function renderHourlyActivity(rows) {
   }], xForIndex, 24);
 }
 
-function renderCompare(days) {
-  const dayKeys = Object.keys(days).sort();
+function groupPointsByDay(points) {
+  const days = {};
+  points.forEach(p => {
+    const day = p.ts.slice(0, 10);
+    (days[day] = days[day] || []).push(p);
+  });
+  return days;
+}
+
+// Bucket a day's raw points onto a fixed 5-minute-of-day grid (288 slots),
+// same effective resolution as the live chart, so both days line up on
+// the same x-axis regardless of exactly when each point was polled.
+function bucketDayPoints(points) {
+  const BUCKET_MIN = 5;
+  const slots = new Array(288).fill(null);
+  points.forEach(p => {
+    const d = new Date(p.ts);
+    const minuteOfDay = d.getUTCHours() * 60 + d.getUTCMinutes();
+    const slot = Math.floor(minuteOfDay / BUCKET_MIN);
+    slots[slot] = p.player_count;
+  });
+  return slots;
+}
+
+function renderCompare(pointsByDay) {
+  const dayKeys = Object.keys(pointsByDay).sort();
   const selA = document.getElementById('day-a');
   const selB = document.getElementById('day-b');
   selA.innerHTML = dayKeys.map(d => `<option value="${d}">${d}</option>`).join('');
@@ -614,40 +638,46 @@ function renderCompare(days) {
   function draw() {
     const container = document.getElementById('compare-chart');
     container.innerHTML = '';
-    const a = days[selA.value] || new Array(24).fill(null);
-    const b = days[selB.value] || new Array(24).fill(null);
+    const a = bucketDayPoints(pointsByDay[selA.value] || []);
+    const b = bucketDayPoints(pointsByDay[selB.value] || []);
 
     const maxVal = Math.max(...a.filter(v => v != null), ...b.filter(v => v != null), 1);
     const innerW = W - PAD.left - PAD.right;
-    const xForIndex = i => PAD.left + innerW * i / 23;
+    const xForIndex = i => PAD.left + innerW * i / (a.length - 1);
 
     const svg = makeSvg();
-    const xLabels = [0, 6, 12, 18, 23].map(h => ({ x: xForIndex(h), label: `${h}:00` }));
+    const xLabels = [0, 6, 12, 18, 23].map(h => ({ x: xForIndex(h * 12), label: `${h}:00` }));
     drawGridAndAxes(svg, maxVal, xLabels);
 
     const coordsA = linePath(a, xForIndex, maxVal);
     const coordsB = linePath(b, xForIndex, maxVal);
 
-    svg.appendChild(svgEl('path', { d: pathD(coordsA), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 }));
-    svg.appendChild(svgEl('path', { d: pathD(coordsB), fill: 'none', stroke: 'var(--warn)', 'stroke-width': 2, 'stroke-dasharray': '5,4' }));
+    svg.appendChild(svgEl('path', { d: pathD(coordsA), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5 }));
+    svg.appendChild(svgEl('path', { d: pathD(coordsB), fill: 'none', stroke: 'var(--warn)', 'stroke-width': 1.5 }));
 
     const wrap = document.createElement('div');
     wrap.className = 'chart-wrap';
     wrap.appendChild(svg);
     container.appendChild(wrap);
 
+    const timeLabel = slot => {
+      const h = Math.floor(slot / 12);
+      const m = (slot % 12) * 5;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    };
+
     attachTooltip(wrap, svg, [
       {
         coords: coordsA,
         color: 'var(--accent)',
-        labelFor: i => ({ value: a[i], name: selA.value, sub: `${i}:00` })
+        labelFor: i => ({ value: a[i], name: selA.value, sub: timeLabel(i) + ' UTC' })
       },
       {
         coords: coordsB,
         color: 'var(--warn)',
-        labelFor: i => ({ value: b[i], name: selB.value, sub: `${i}:00` })
+        labelFor: i => ({ value: b[i], name: selB.value, sub: timeLabel(i) + ' UTC' })
       }
-    ], xForIndex, 24);
+    ], xForIndex, a.length);
   }
 
   selA.addEventListener('change', draw);
@@ -733,12 +763,15 @@ async function init() {
     document.getElementById('stat-avg-all').textContent = Math.round(avgAll);
 
     renderOverview(recent);
-    renderCompare(groupByDay(recent));
     renderHourlyActivity(recent);
   }
 
   if (points.length) {
     renderLive(points);
+    renderCompare(groupPointsByDay(points));
+  } else {
+    document.getElementById('compare-chart').innerHTML =
+      '<div id="status">Пока нет данных.</div>';
   }
 }
 
