@@ -1107,34 +1107,50 @@ async function loadGzipJSON(path) {
 // Lazily fetches per-day point files (docs/points-by-day/YYYY-MM-DD.json.gz)
 // and caches them in memory, so opening the dashboard stays fast (only the
 // last 48h ships inline) while every day of history is still reachable.
+//
+// Important: the inline `recentPoints` (last 48h) usually cover today and
+// yesterday only *partially* (e.g. from 07:37 onward, not from 00:00) -
+// they're a rolling window, not a full day. So we can't treat "this day
+// already has some cached points" as "this day is fully loaded", or a
+// partial day like that gets stuck half-empty forever (the actual bug
+// that caused the gaps in Compare). Days that are older than the 48h
+// window are unaffected since their points.json contribution is empty.
 function createHistoryStore(recentPoints, pointsIndex) {
-  const cache = new Map(); // day -> points[]
+  const cache = new Map(); // day -> full points[] (only set once truly complete)
+  const fullyLoaded = new Set();
+  const partialByDay = new Map(); // day -> inline points from recentPoints, as a fallback
+
   recentPoints.forEach(p => {
     const day = p.ts.slice(0, 10);
-    if (!cache.has(day)) cache.set(day, []);
-  });
-  // seed cache with the recent inline points, grouped by day
-  recentPoints.forEach(p => {
-    cache.get(p.ts.slice(0, 10)).push(p);
+    if (!partialByDay.has(day)) partialByDay.set(day, []);
+    partialByDay.get(day).push(p);
   });
 
   const availableDays = (pointsIndex || []).map(d => d.day).sort();
   const inflight = new Map();
 
   async function ensureDay(day) {
-    if (cache.has(day) && cache.get(day).length) return cache.get(day);
-    if (!availableDays.includes(day)) return [];
+    if (fullyLoaded.has(day)) return cache.get(day);
+    if (!availableDays.includes(day)) {
+      // Not in the by-day index (shouldn't normally happen) - fall back to
+      // whatever inline points we have for it, if any.
+      return partialByDay.get(day) || [];
+    }
     if (inflight.has(day)) return inflight.get(day);
     const p = loadGzipJSON(`points-by-day/${day}.json.gz`)
-      .then(pts => { cache.set(day, pts); return pts; })
-      .catch(() => []);
+      .then(pts => {
+        cache.set(day, pts);
+        fullyLoaded.add(day);
+        return pts;
+      })
+      .catch(() => partialByDay.get(day) || []);
     inflight.set(day, p);
     return p;
   }
 
   return {
     availableDays,
-    getCachedDay: day => cache.get(day) || [],
+    getCachedDay: day => cache.get(day) || partialByDay.get(day) || [],
     ensureDay,
     async ensureRange(startDay, endDay) {
       const days = availableDays.filter(d => d >= startDay && d <= endDay);
