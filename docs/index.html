@@ -266,6 +266,46 @@
   .tooltip .tt-value { font-weight: 600; color: var(--text); }
   .tooltip .tt-label { color: var(--muted); margin-top: 2px; }
 
+  .compare-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 16px;
+    font-size: 12px;
+  }
+  .compare-summary .col {
+    background: var(--panel);
+    padding: 12px 16px;
+  }
+  .compare-summary .col-title {
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .compare-summary .row {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    padding: 2px 0;
+  }
+  .compare-summary .row .v { color: var(--text); font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
+  .compare-diff {
+    grid-column: 1 / -1;
+    background: var(--panel);
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
+  }
+  .compare-diff .v { font-weight: 600; font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
+
   #status {
     color: var(--muted);
     font-size: 12px;
@@ -333,7 +373,7 @@
   <div class="panel">
     <div class="panel-head">
       <div>
-        <h2>Live (каждые ~5 минут)</h2>
+        <h2>Live (раз в минуту)</h2>
       </div>
       <div class="stat-now-card">
         <div class="label">Сейчас онлайн <span id="stat-now-time">&mdash;</span></div>
@@ -359,7 +399,7 @@
 
   <div class="panel">
     <h2>Общая динамика</h2>
-    <p class="desc">Среднее число игроков по часам за весь собранный период</p>
+    <p class="desc">Среднее число игроков по часам за весь собранный период &middot; <span class="legend-swatch" style="background:var(--warn)"></span>пунктир — скользящее среднее за 7 дней</p>
     <div class="controls">
       <div class="range-btns" id="overview-range-btns"></div>
       <button class="zoom-reset-btn" id="overview-zoom-reset">Сбросить зум</button>
@@ -387,6 +427,7 @@
       <select id="day-b"></select>
     </div>
     <div id="compare-chart"></div>
+    <div class="compare-summary" id="compare-summary"></div>
   </div>
 
   <div class="panel">
@@ -556,7 +597,6 @@ function attachTooltip(wrap, svg, series, xForIndex, count, overlay) {
   };
 }
 
-// --- Zoom/pan for time-series line charts -----------------------------
 // --- Zoom via sliders --------------------------------------------------
 // Two <input type="range"> elements control a [start, end] window (0..1)
 // into the full data array: "zoom" sets the window width, "position" sets
@@ -603,7 +643,7 @@ function setupRangeControls(btnContainer, resetBtn, ranges, state, onChange) {
       state.start = r.start;
       state.end = r.end;
       resetBtn.classList.remove('visible');
-      onChange();
+      onChange(r);
     });
     btnContainer.appendChild(btn);
     return btn;
@@ -615,9 +655,21 @@ function setupRangeControls(btnContainer, resetBtn, ranges, state, onChange) {
     state.start = 0;
     state.end = 1;
     resetBtn.classList.remove('visible');
-    onChange();
+    onChange(all);
   });
   return buttons;
+}
+
+function movingAverage(values, windowSize) {
+  // Centered simple moving average; returns null where the window would
+  // run off either edge (so the trend line only covers full windows).
+  const half = Math.floor(windowSize / 2);
+  return values.map((_, i) => {
+    if (i < half || i >= values.length - half) return null;
+    let sum = 0;
+    for (let j = i - half; j <= i + half; j++) sum += values[j];
+    return sum / windowSize;
+  });
 }
 
 function renderOverview(rows) {
@@ -643,11 +695,17 @@ function renderOverview(rows) {
   const state = { start: 0, end: 1, minWindow: Math.min(1, 6 / totalHours) };
   const slider = setupSliderZoom(zoomSlider, posSlider, state, draw);
 
+  // 7-day trend computed once over the full history so it's smooth and
+  // correct right up to the edges of whatever window the user zooms to.
+  const trendFull = movingAverage(rows.map(r => r.avg), Math.min(rows.length, 24 * 7));
+  const hasTrend = trendFull.some(v => v != null);
+
   function draw() {
     container.innerHTML = '';
     const i0 = Math.round(state.start * (rows.length - 1));
     const i1 = Math.max(i0 + 1, Math.round(state.end * (rows.length - 1)));
     const slice = rows.slice(i0, i1 + 1);
+    const trendSlice = trendFull.slice(i0, i1 + 1);
 
     const maxVal = Math.max(...slice.map(r => r.max), 1);
     const innerW = W - PAD.left - PAD.right;
@@ -667,19 +725,39 @@ function renderOverview(rows) {
     const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 });
     svg.appendChild(path);
 
-    const wrap = document.createElement('div');
-    wrap.className = 'chart-wrap';
-    wrap.appendChild(svg);
-    container.appendChild(wrap);
-
-    attachTooltip(wrap, svg, [{
+    const series = [{
       coords,
       color: 'var(--accent)',
       labelFor: i => ({
         value: slice[i].avg,
         sub: slice[i].hour.replace('T', ' ') + ':00 UTC (max ' + slice[i].max + ', min ' + slice[i].min + ')'
       })
-    }], xForIndex, slice.length);
+    }];
+
+    if (hasTrend) {
+      const trendCoords = linePath(trendSlice, xForIndex, maxVal);
+      const trendPath = svgEl('path', {
+        d: pathD(trendCoords), fill: 'none', stroke: 'var(--warn)',
+        'stroke-width': 1.5, 'stroke-dasharray': '5,4', opacity: 0.85
+      });
+      svg.appendChild(trendPath);
+      series.push({
+        coords: trendCoords,
+        color: 'var(--warn)',
+        labelFor: i => ({
+          value: trendSlice[i] != null ? Math.round(trendSlice[i]) : '—',
+          name: '7д тренд',
+          sub: slice[i].hour.replace('T', ' ') + ':00 UTC'
+        })
+      });
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    wrap.appendChild(svg);
+    container.appendChild(wrap);
+
+    attachTooltip(wrap, svg, series, xForIndex, slice.length);
 
     resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
@@ -691,29 +769,47 @@ function renderOverview(rows) {
   draw();
 }
 
-function renderLive(points) {
+function renderLive(recentPoints, historyStore) {
   const container = document.getElementById('live-chart');
   const rangeBtns = document.getElementById('live-range-btns');
   const resetBtn = document.getElementById('live-zoom-reset');
   const zoomSlider = document.getElementById('live-zoom-slider');
   const posSlider = document.getElementById('live-pos-slider');
   container.innerHTML = '';
-  if (!points.length) {
+  if (!recentPoints.length) {
     container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого флаша.</div>';
     return;
   }
 
-  const firstTs = new Date(points[0].ts).getTime();
-  const lastTs = new Date(points[points.length - 1].ts).getTime();
+  // Start with just the inline 48h (instant). Only fetch full history from
+  // points-by-day/ when the person actually asks for "Всё" or a range that
+  // reaches further back than what's already loaded.
+  let points = recentPoints;
+  let fullyLoaded = false;
+
+  async function loadFullHistory() {
+    if (fullyLoaded) return;
+    container.innerHTML = '<div id="status">Загрузка всей истории&hellip;</div>';
+    const days = historyStore.availableDays;
+    await Promise.all(days.map(d => historyStore.ensureDay(d)));
+    const merged = [];
+    days.forEach(d => merged.push(...historyStore.getCachedDay(d)));
+    merged.sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
+    points = merged.length ? merged : recentPoints;
+    fullyLoaded = true;
+  }
+
+  const firstTs = new Date(recentPoints[0].ts).getTime();
+  const lastTs = new Date(recentPoints[recentPoints.length - 1].ts).getTime();
   const totalMs = Math.max(1, lastTs - firstTs);
   const hoursAgoFrac = h => Math.max(0, 1 - (h * 3600000) / totalMs);
   const ranges = [
-    { label: '1ч', start: hoursAgoFrac(1), end: 1 },
-    { label: '6ч', start: hoursAgoFrac(6), end: 1 },
-    { label: '24ч', start: hoursAgoFrac(24), end: 1 },
-    { label: 'Всё', start: 0, end: 1 }
+    { label: '1ч', start: hoursAgoFrac(1), end: 1, needsFull: false },
+    { label: '6ч', start: hoursAgoFrac(6), end: 1, needsFull: false },
+    { label: '24ч', start: hoursAgoFrac(24), end: 1, needsFull: false },
+    { label: 'Всё', start: 0, end: 1, needsFull: true }
   ];
-  const state = { start: 0, end: 1, minWindow: Math.min(1, 10 / points.length) };
+  const state = { start: 0, end: 1, minWindow: Math.min(1, 10 / recentPoints.length) };
   const slider = setupSliderZoom(zoomSlider, posSlider, state, draw);
 
   function draw() {
@@ -760,7 +856,14 @@ function renderLive(points) {
     resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
 
-  setupRangeControls(rangeBtns, resetBtn, ranges, state, () => { slider.syncFromState(); draw(); });
+  setupRangeControls(rangeBtns, resetBtn, ranges, state, async (range) => {
+    if (range && range.needsFull) {
+      await loadFullHistory();
+      state.minWindow = Math.min(1, 10 / points.length);
+    }
+    slider.syncFromState();
+    draw();
+  });
   rangeBtns.children[rangeBtns.children.length - 1].classList.add('active');
   slider.syncFromState();
   draw();
@@ -838,15 +941,6 @@ function renderHourlyActivity(rows) {
   }], xForIndex, 24);
 }
 
-function groupPointsByDay(points) {
-  const days = {};
-  points.forEach(p => {
-    const day = p.ts.slice(0, 10);
-    (days[day] = days[day] || []).push(p);
-  });
-  return days;
-}
-
 // Bucket a day's raw points onto a fixed 5-minute-of-day grid (288 slots),
 // same effective resolution as the live chart, so both days line up on
 // the same x-axis regardless of exactly when each point was polled.
@@ -862,8 +956,8 @@ function bucketDayPoints(points) {
   return slots;
 }
 
-function renderCompare(pointsByDay) {
-  const dayKeys = Object.keys(pointsByDay).sort();
+function renderCompare(historyStore) {
+  const dayKeys = historyStore.availableDays;
   const selA = document.getElementById('day-a');
   const selB = document.getElementById('day-b');
   selA.innerHTML = dayKeys.map(d => `<option value="${d}">${d}</option>`).join('');
@@ -877,11 +971,17 @@ function renderCompare(pointsByDay) {
     selB.value = dayKeys[0];
   }
 
-  function draw() {
+  async function draw() {
     const container = document.getElementById('compare-chart');
+    container.innerHTML = '<div id="status">Загрузка данных&hellip;</div>';
+    const [ptsA, ptsB] = await Promise.all([
+      historyStore.ensureDay(selA.value),
+      historyStore.ensureDay(selB.value)
+    ]);
     container.innerHTML = '';
-    const a = bucketDayPoints(pointsByDay[selA.value] || []);
-    const b = bucketDayPoints(pointsByDay[selB.value] || []);
+
+    const a = bucketDayPoints(ptsA);
+    const b = bucketDayPoints(ptsB);
 
     const maxVal = Math.max(...a.filter(v => v != null), ...b.filter(v => v != null), 1);
     const innerW = W - PAD.left - PAD.right;
@@ -920,6 +1020,55 @@ function renderCompare(pointsByDay) {
         labelFor: i => ({ value: b[i], name: selB.value, sub: timeLabel(i) + ' UTC' })
       }
     ], xForIndex, a.length);
+
+    renderCompareSummary(a, b, selA.value, selB.value);
+  }
+
+  function statsFor(slots) {
+    const vals = slots.filter(v => v != null);
+    if (!vals.length) return null;
+    return {
+      peak: Math.max(...vals),
+      avg: Math.round(vals.reduce((s, v) => s + v, 0) / vals.length),
+      min: Math.min(...vals)
+    };
+  }
+
+  function renderCompareSummary(a, b, labelA, labelB) {
+    const summary = document.getElementById('compare-summary');
+    const statsA = statsFor(a);
+    const statsB = statsFor(b);
+    if (!statsA || !statsB) {
+      summary.innerHTML = '';
+      return;
+    }
+
+    const col = (label, color, stats) => `
+      <div class="col">
+        <div class="col-title"><span class="legend-swatch" style="background:${color}"></span>${label}</div>
+        <div class="row"><span>Пик</span><span class="v">${stats.peak}</span></div>
+        <div class="row"><span>Среднее</span><span class="v">${stats.avg}</span></div>
+        <div class="row"><span>Минимум</span><span class="v">${stats.min}</span></div>
+      </div>`;
+
+    const avgDiff = statsB.avg - statsA.avg;
+    const avgPct = statsA.avg > 0 ? (avgDiff / statsA.avg) * 100 : 0;
+    const peakDiff = statsB.peak - statsA.peak;
+    const peakPct = statsA.peak > 0 ? (peakDiff / statsA.peak) * 100 : 0;
+    const sign = n => (n > 0 ? '+' : '');
+    const cls = n => (Math.abs(n) < 1 ? 'trend-flat' : n > 0 ? 'trend-up' : 'trend-down');
+
+    summary.innerHTML =
+      col(labelA, 'var(--accent)', statsA) +
+      col(labelB, 'var(--warn)', statsB) +
+      `<div class="compare-diff">
+        ${labelB} к ${labelA}: среднее
+        <span class="v ${cls(avgPct)}">${sign(avgDiff)}${avgDiff}</span>
+        (<span class="v ${cls(avgPct)}">${sign(avgPct)}${avgPct.toFixed(1)}%</span>),
+        пик
+        <span class="v ${cls(peakPct)}">${sign(peakDiff)}${peakDiff}</span>
+        (<span class="v ${cls(peakPct)}">${sign(peakPct)}${peakPct.toFixed(1)}%</span>)
+      </div>`;
   }
 
   selA.addEventListener('change', draw);
@@ -931,6 +1080,68 @@ async function loadJSON(path) {
   const res = await fetch(path, { cache: 'no-store' });
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
   return res.json();
+}
+
+async function loadGzipJSON(path) {
+  const res = await fetch(path, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  // Browsers auto-decompress gzip responses only when the server sends the
+  // right Content-Encoding header; GitHub Pages serves .gz files raw with
+  // Content-Encoding: gzip is not guaranteed for static files, so decode
+  // manually via DecompressionStream when the bytes are actually gzipped.
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const isGzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
+  if (!isGzip) {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('gzip decoding not supported in this browser');
+  }
+  const ds = new DecompressionStream('gzip');
+  const stream = new Blob([bytes]).stream().pipeThrough(ds);
+  const text = await new Response(stream).text();
+  return JSON.parse(text);
+}
+
+// Lazily fetches per-day point files (docs/points-by-day/YYYY-MM-DD.json.gz)
+// and caches them in memory, so opening the dashboard stays fast (only the
+// last 48h ships inline) while every day of history is still reachable.
+function createHistoryStore(recentPoints, pointsIndex) {
+  const cache = new Map(); // day -> points[]
+  recentPoints.forEach(p => {
+    const day = p.ts.slice(0, 10);
+    if (!cache.has(day)) cache.set(day, []);
+  });
+  // seed cache with the recent inline points, grouped by day
+  recentPoints.forEach(p => {
+    cache.get(p.ts.slice(0, 10)).push(p);
+  });
+
+  const availableDays = (pointsIndex || []).map(d => d.day).sort();
+  const inflight = new Map();
+
+  async function ensureDay(day) {
+    if (cache.has(day) && cache.get(day).length) return cache.get(day);
+    if (!availableDays.includes(day)) return [];
+    if (inflight.has(day)) return inflight.get(day);
+    const p = loadGzipJSON(`points-by-day/${day}.json.gz`)
+      .then(pts => { cache.set(day, pts); return pts; })
+      .catch(() => []);
+    inflight.set(day, p);
+    return p;
+  }
+
+  return {
+    availableDays,
+    getCachedDay: day => cache.get(day) || [],
+    ensureDay,
+    async ensureRange(startDay, endDay) {
+      const days = availableDays.filter(d => d >= startDay && d <= endDay);
+      await Promise.all(days.map(ensureDay));
+      return days;
+    }
+  };
 }
 
 function formatKyivTime(date) {
@@ -960,6 +1171,16 @@ async function init() {
     document.getElementById('live-chart').innerHTML =
       '<div id="status">Не удалось загрузить points.json</div>';
   }
+
+  let pointsIndex = [];
+  try {
+    pointsIndex = await loadJSON('points-index.json');
+  } catch (e) {
+    // Older deployments without points-index.json still work — Live just
+    // won't have "Всё" / full-history lazy loading, and Compare falls
+    // back to whatever's in the inline points.json.
+  }
+  const historyStore = createHistoryStore(points, pointsIndex);
 
   if (points.length) {
     const lastPoint = points[points.length - 1];
@@ -1009,8 +1230,14 @@ async function init() {
   }
 
   if (points.length) {
-    renderLive(points);
-    renderCompare(groupPointsByDay(points));
+    renderLive(points, historyStore);
+  } else {
+    document.getElementById('live-chart').innerHTML =
+      '<div id="status">Пока нет данных.</div>';
+  }
+
+  if (historyStore.availableDays.length) {
+    renderCompare(historyStore);
   } else {
     document.getElementById('compare-chart').innerHTML =
       '<div id="status">Пока нет данных.</div>';
