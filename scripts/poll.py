@@ -85,7 +85,7 @@ def main():
     buffer = {}  # hour_key -> list of {ts, player_count} not yet flushed
     current_hour = None
     last_flush = start
-    FLUSH_INTERVAL_SEC = 300  # write partial data every 5 min so it shows up quickly
+    FLUSH_INTERVAL_SEC = 60  # write partial data every minute so the site updates that often
 
     while time.time() - start < RUN_DURATION_SEC:
         now = datetime.now(timezone.utc)
