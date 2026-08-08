@@ -166,11 +166,49 @@
     margin-right: 6px;
   }
 
+  .range-btns {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+  }
+  .range-btn {
+    background: #191c22;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .range-btn:hover { color: var(--text); border-color: var(--muted); }
+  .range-btn.active { color: var(--accent); border-color: var(--accent-dim); background: #142320; }
+  .zoom-reset-btn {
+    background: #191c22;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    display: none;
+  }
+  .zoom-reset-btn:hover { color: var(--text); border-color: var(--muted); }
+  .zoom-reset-btn.visible { display: inline-block; }
+  .zoom-hint {
+    color: var(--muted);
+    font-size: 11px;
+    margin: -10px 0 12px;
+  }
+
   svg { display: block; width: 100%; height: auto; }
   .axis-label { fill: var(--muted); font-size: 10px; }
   .gridline { stroke: var(--line); stroke-width: 1; }
 
-  .chart-wrap { position: relative; }
+  .chart-wrap { position: relative; touch-action: pan-y; }
+  .chart-wrap.zoomable { cursor: grab; }
+  .chart-wrap.zoomable.dragging { cursor: grabbing; }
   .hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3,3; opacity: 0; pointer-events: none; }
   .hover-dot { opacity: 0; pointer-events: none; }
   .tooltip {
@@ -264,13 +302,23 @@
         <div class="value mono" id="stat-now">&mdash;</div>
       </div>
     </div>
+    <div class="controls">
+      <div class="range-btns" id="live-range-btns"></div>
+      <button class="zoom-reset-btn" id="live-zoom-reset">Сбросить зум</button>
+    </div>
     <div id="live-chart"><div id="status">Загрузка данных&hellip;</div></div>
+    <p class="zoom-hint">Колесо мыши / щипок — зум, перетаскивание — панорама</p>
   </div>
 
   <div class="panel">
     <h2>Общая динамика</h2>
     <p class="desc">Среднее число игроков по часам за весь собранный период</p>
+    <div class="controls">
+      <div class="range-btns" id="overview-range-btns"></div>
+      <button class="zoom-reset-btn" id="overview-zoom-reset">Сбросить зум</button>
+    </div>
     <div id="overview-chart"><div id="status">Загрузка данных&hellip;</div></div>
+    <p class="zoom-hint">Колесо мыши / щипок — зум, перетаскивание — панорама</p>
   </div>
 
   <div class="panel">
@@ -438,90 +486,295 @@ function attachTooltip(wrap, svg, series, xForIndex, count) {
   overlay.addEventListener('touchend', hide);
 }
 
+// --- Zoom/pan for time-series line charts -----------------------------
+// Keeps a [startFrac, endFrac] window (0..1) into the full data array and
+// re-renders only that slice. Wheel = zoom around cursor, drag = pan,
+// pinch = zoom on touch devices.
+function attachZoomPan(wrap, svg, state, redraw) {
+  wrap.classList.add('zoomable');
+  const overlay = svgEl('rect', {
+    x: PAD.left, y: PAD.top,
+    width: W - PAD.left - PAD.right, height: H - PAD.top - PAD.bottom,
+    fill: 'transparent'
+  });
+  // insert behind the tooltip overlay (which is appended after this call)
+  svg.appendChild(overlay);
+
+  function clampWindow(start, end) {
+    let len = end - start;
+    len = Math.max(state.minWindow, Math.min(1, len));
+    end = start + len;
+    if (start < 0) { start = 0; end = start + len; }
+    if (end > 1) { end = 1; start = end - len; }
+    return [start, end];
+  }
+
+  function zoomAt(fracX, factor) {
+    const cur = fracX; // 0..1 position within current window
+    const abs = state.start + cur * (state.end - state.start);
+    let newLen = (state.end - state.start) * factor;
+    newLen = Math.max(state.minWindow, Math.min(1, newLen));
+    let newStart = abs - cur * newLen;
+    let newEnd = newStart + newLen;
+    [newStart, newEnd] = clampWindow(newStart, newEnd);
+    state.start = newStart;
+    state.end = newEnd;
+    redraw();
+  }
+
+  overlay.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = overlay.getBoundingClientRect();
+    const fracX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const factor = e.deltaY > 0 ? 1.15 : 0.87;
+    zoomAt(fracX, factor);
+  }, { passive: false });
+
+  // drag to pan
+  let dragging = false, dragStartX = 0, dragStartWin = [0, 1];
+  overlay.addEventListener('mousedown', (e) => {
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartWin = [state.start, state.end];
+    wrap.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const rect = overlay.getBoundingClientRect();
+    const dxFrac = (e.clientX - dragStartX) / rect.width;
+    const len = dragStartWin[1] - dragStartWin[0];
+    let start = dragStartWin[0] - dxFrac * len;
+    let end = start + len;
+    [start, end] = clampWindow(start, end);
+    state.start = start;
+    state.end = end;
+    redraw();
+  });
+  window.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; wrap.classList.remove('dragging'); }
+  });
+
+  // touch: single-finger pan, two-finger pinch zoom
+  let touchStartDist = null, touchStartWin = [0, 1], touchStartX = null;
+  overlay.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      touchStartDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      touchStartWin = [state.start, state.end];
+    } else if (e.touches.length === 1) {
+      touchStartX = e.touches[0].clientX;
+      touchStartWin = [state.start, state.end];
+    }
+  }, { passive: true });
+  overlay.addEventListener('touchmove', (e) => {
+    const rect = overlay.getBoundingClientRect();
+    if (e.touches.length === 2 && touchStartDist != null) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const factor = touchStartDist / Math.max(dist, 1);
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const fracX = Math.max(0, Math.min(1, (midX - rect.left) / rect.width));
+      const abs = touchStartWin[0] + fracX * (touchStartWin[1] - touchStartWin[0]);
+      let newLen = (touchStartWin[1] - touchStartWin[0]) * factor;
+      newLen = Math.max(state.minWindow, Math.min(1, newLen));
+      let newStart = abs - fracX * newLen;
+      let newEnd = newStart + newLen;
+      [newStart, newEnd] = clampWindow(newStart, newEnd);
+      state.start = newStart;
+      state.end = newEnd;
+      redraw();
+      e.preventDefault();
+    } else if (e.touches.length === 1 && touchStartX != null) {
+      const dxFrac = (e.touches[0].clientX - touchStartX) / rect.width;
+      const len = touchStartWin[1] - touchStartWin[0];
+      let start = touchStartWin[0] - dxFrac * len;
+      let end = start + len;
+      [start, end] = clampWindow(start, end);
+      state.start = start;
+      state.end = end;
+      redraw();
+      e.preventDefault();
+    }
+  }, { passive: false });
+  overlay.addEventListener('touchend', () => {
+    touchStartDist = null;
+    touchStartX = null;
+  });
+
+  return overlay;
+}
+
+function setupRangeControls(btnContainer, resetBtn, ranges, state, onChange) {
+  btnContainer.innerHTML = '';
+  const buttons = ranges.map(r => {
+    const btn = document.createElement('button');
+    btn.className = 'range-btn';
+    btn.textContent = r.label;
+    btn.addEventListener('click', () => {
+      buttons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.start = r.start;
+      state.end = r.end;
+      resetBtn.classList.remove('visible');
+      onChange();
+    });
+    btnContainer.appendChild(btn);
+    return btn;
+  });
+  resetBtn.addEventListener('click', () => {
+    buttons.forEach(b => b.classList.remove('active'));
+    const all = ranges.find(r => r.start === 0 && r.end === 1);
+    if (all) buttons[ranges.indexOf(all)].classList.add('active');
+    state.start = 0;
+    state.end = 1;
+    resetBtn.classList.remove('visible');
+    onChange();
+  });
+  return buttons;
+}
+
 function renderOverview(rows) {
   const container = document.getElementById('overview-chart');
+  const rangeBtns = document.getElementById('overview-range-btns');
+  const resetBtn = document.getElementById('overview-zoom-reset');
   container.innerHTML = '';
   if (!rows.length) {
     container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого часа сбора.</div>';
     return;
   }
 
-  const maxVal = Math.max(...rows.map(r => r.max), 1);
-  const innerW = W - PAD.left - PAD.right;
-  const xForIndex = i => PAD.left + innerW * (rows.length === 1 ? 0.5 : i / (rows.length - 1));
+  const totalHours = rows.length;
+  const hoursAgoFrac = h => Math.max(0, 1 - h / totalHours);
+  const ranges = [
+    { label: '24ч', start: hoursAgoFrac(24), end: 1 },
+    { label: '7д', start: hoursAgoFrac(24 * 7), end: 1 },
+    { label: '30д', start: hoursAgoFrac(24 * 30), end: 1 },
+    { label: 'Всё', start: 0, end: 1 }
+  ];
+  const state = { start: 0, end: 1, minWindow: Math.min(1, 6 / totalHours) };
 
-  const svg = makeSvg();
+  function draw() {
+    container.innerHTML = '';
+    const i0 = Math.round(state.start * (rows.length - 1));
+    const i1 = Math.max(i0 + 1, Math.round(state.end * (rows.length - 1)));
+    const slice = rows.slice(i0, i1 + 1);
 
-  // x labels: show ~6 evenly spaced dates
-  const labelCount = Math.min(6, rows.length);
-  const xLabels = [];
-  for (let i = 0; i < labelCount; i++) {
-    const idx = Math.round(i * (rows.length - 1) / Math.max(1, labelCount - 1));
-    xLabels.push({ x: xForIndex(idx), label: rows[idx].hour.slice(5, 13).replace('T', ' ') });
+    const maxVal = Math.max(...slice.map(r => r.max), 1);
+    const innerW = W - PAD.left - PAD.right;
+    const xForIndex = i => PAD.left + innerW * (slice.length === 1 ? 0.5 : i / (slice.length - 1));
+
+    const svg = makeSvg();
+
+    const labelCount = Math.min(6, slice.length);
+    const xLabels = [];
+    for (let i = 0; i < labelCount; i++) {
+      const idx = Math.round(i * (slice.length - 1) / Math.max(1, labelCount - 1));
+      xLabels.push({ x: xForIndex(idx), label: slice[idx].hour.slice(5, 13).replace('T', ' ') });
+    }
+    drawGridAndAxes(svg, maxVal, xLabels);
+
+    const coords = linePath(slice.map(r => r.avg), xForIndex, maxVal);
+    const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 });
+    svg.appendChild(path);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    wrap.appendChild(svg);
+    container.appendChild(wrap);
+
+    attachZoomPan(wrap, svg, state, draw);
+    attachTooltip(wrap, svg, [{
+      coords,
+      color: 'var(--accent)',
+      labelFor: i => ({
+        value: slice[i].avg,
+        sub: slice[i].hour.replace('T', ' ') + ':00 UTC (max ' + slice[i].max + ', min ' + slice[i].min + ')'
+      })
+    }], xForIndex, slice.length);
+
+    resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
-  drawGridAndAxes(svg, maxVal, xLabels);
 
-  const coords = linePath(rows.map(r => r.avg), xForIndex, maxVal);
-  const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 });
-  svg.appendChild(path);
-
-  const wrap = document.createElement('div');
-  wrap.className = 'chart-wrap';
-  wrap.appendChild(svg);
-  container.appendChild(wrap);
-
-  attachTooltip(wrap, svg, [{
-    coords,
-    color: 'var(--accent)',
-    labelFor: i => ({
-      value: rows[i].avg,
-      sub: rows[i].hour.replace('T', ' ') + ':00 UTC (max ' + rows[i].max + ', min ' + rows[i].min + ')'
-    })
-  }], xForIndex, rows.length);
+  setupRangeControls(rangeBtns, resetBtn, ranges, state, draw);
+  // default active = "Всё"
+  rangeBtns.children[rangeBtns.children.length - 1].classList.add('active');
+  draw();
 }
 
 function renderLive(points) {
   const container = document.getElementById('live-chart');
+  const rangeBtns = document.getElementById('live-range-btns');
+  const resetBtn = document.getElementById('live-zoom-reset');
   container.innerHTML = '';
   if (!points.length) {
     container.innerHTML = '<div id="status">Пока нет данных &mdash; появятся после первого флаша.</div>';
     return;
   }
 
-  const values = points.map(p => p.player_count);
-  const maxVal = Math.max(...values, 1);
-  const innerW = W - PAD.left - PAD.right;
-  const xForIndex = i => PAD.left + innerW * (points.length === 1 ? 0.5 : i / (points.length - 1));
+  const firstTs = new Date(points[0].ts).getTime();
+  const lastTs = new Date(points[points.length - 1].ts).getTime();
+  const totalMs = Math.max(1, lastTs - firstTs);
+  const hoursAgoFrac = h => Math.max(0, 1 - (h * 3600000) / totalMs);
+  const ranges = [
+    { label: '1ч', start: hoursAgoFrac(1), end: 1 },
+    { label: '6ч', start: hoursAgoFrac(6), end: 1 },
+    { label: '24ч', start: hoursAgoFrac(24), end: 1 },
+    { label: 'Всё', start: 0, end: 1 }
+  ];
+  const state = { start: 0, end: 1, minWindow: Math.min(1, 10 / points.length) };
 
-  const svg = makeSvg();
+  function draw() {
+    container.innerHTML = '';
+    const i0 = Math.round(state.start * (points.length - 1));
+    const i1 = Math.max(i0 + 1, Math.round(state.end * (points.length - 1)));
+    const slice = points.slice(i0, i1 + 1);
 
-  const labelCount = Math.min(6, points.length);
-  const xLabels = [];
-  for (let i = 0; i < labelCount; i++) {
-    const idx = Math.round(i * (points.length - 1) / Math.max(1, labelCount - 1));
-    const d = new Date(points[idx].ts);
-    const label = d.toISOString().slice(5, 16).replace('T', ' ');
-    xLabels.push({ x: xForIndex(idx), label });
+    const values = slice.map(p => p.player_count);
+    const maxVal = Math.max(...values, 1);
+    const innerW = W - PAD.left - PAD.right;
+    const xForIndex = i => PAD.left + innerW * (slice.length === 1 ? 0.5 : i / (slice.length - 1));
+
+    const svg = makeSvg();
+
+    const labelCount = Math.min(6, slice.length);
+    const xLabels = [];
+    for (let i = 0; i < labelCount; i++) {
+      const idx = Math.round(i * (slice.length - 1) / Math.max(1, labelCount - 1));
+      const d = new Date(slice[idx].ts);
+      const label = d.toISOString().slice(5, 16).replace('T', ' ');
+      xLabels.push({ x: xForIndex(idx), label });
+    }
+    drawGridAndAxes(svg, maxVal, xLabels);
+
+    const coords = linePath(values, xForIndex, maxVal);
+    const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5 });
+    svg.appendChild(path);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    wrap.appendChild(svg);
+    container.appendChild(wrap);
+
+    attachZoomPan(wrap, svg, state, draw);
+    attachTooltip(wrap, svg, [{
+      coords,
+      color: 'var(--accent)',
+      labelFor: i => ({
+        value: slice[i].player_count,
+        sub: new Date(slice[i].ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+      })
+    }], xForIndex, slice.length);
+
+    resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
-  drawGridAndAxes(svg, maxVal, xLabels);
 
-  const coords = linePath(values, xForIndex, maxVal);
-  const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5 });
-  svg.appendChild(path);
-
-  const wrap = document.createElement('div');
-  wrap.className = 'chart-wrap';
-  wrap.appendChild(svg);
-  container.appendChild(wrap);
-
-  attachTooltip(wrap, svg, [{
-    coords,
-    color: 'var(--accent)',
-    labelFor: i => ({
-      value: points[i].player_count,
-      sub: new Date(points[i].ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
-    })
-  }], xForIndex, points.length);
+  setupRangeControls(rangeBtns, resetBtn, ranges, state, draw);
+  rangeBtns.children[rangeBtns.children.length - 1].classList.add('active');
+  draw();
 }
 
 function groupByDay(rows) {
