@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Soulscam Tracker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0d10'/%3E%3Cpath d='M4 22 L10 14 L16 18 L22 8 L28 12' fill='none' stroke='%235ee6b0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<meta property="og:title" content="Soulscam Tracker">
+<meta property="og:description" content="Онлайн игроков Embervault / Rise of Empires в реальном времени">
+<meta property="og:type" content="website">
+<meta name="description" content="Онлайн игроков Embervault / Rise of Empires в реальном времени">
 <style>
   :root {
     --bg: #0b0d10;
@@ -41,6 +46,31 @@
     margin: 0;
     color: var(--muted);
     font-size: 13px;
+  }
+
+  .staleness-banner {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 10px 24px;
+    background: #2a1f14;
+    border-bottom: 1px solid #4a3620;
+    color: #e6b05e;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .staleness-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #e6b05e;
+    flex-shrink: 0;
+    animation: staleness-pulse 2s ease-in-out infinite;
+  }
+  @keyframes staleness-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 
   .stats-wrap {
@@ -342,6 +372,11 @@
 <header>
   <h1>Soulscam Tracker</h1>
 </header>
+
+<div id="staleness-banner" class="staleness-banner" style="display:none">
+  <span class="staleness-dot"></span>
+  <span id="staleness-text"></span>
+</div>
 
 <div class="stats-wrap">
 <div class="stats" id="stats">
@@ -1236,6 +1271,37 @@ function formatKyivTime(date) {
   return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
 
+// Polling writes a point roughly once a minute and the workflow commits
+// about as often, so anything past a few minutes stale means the
+// collector likely stopped (expired token, rate limit, crashed run,
+// broken self-retrigger chain) rather than just normal jitter. Surface
+// that plainly instead of silently showing old numbers as if they were
+// current.
+const STALE_WARN_MS = 10 * 60 * 1000;   // 10 min: probably a hiccup
+const STALE_ERROR_MS = 60 * 60 * 1000;  // 1 hour: workflow is very likely down
+
+function checkStaleness(lastTs) {
+  const banner = document.getElementById('staleness-banner');
+  const text = document.getElementById('staleness-text');
+  if (!lastTs) {
+    banner.style.display = 'none';
+    return;
+  }
+  const ageMs = Date.now() - new Date(lastTs).getTime();
+  if (ageMs < STALE_WARN_MS) {
+    banner.style.display = 'none';
+    return;
+  }
+  const ageMin = Math.round(ageMs / 60000);
+  const ageLabel = ageMin < 60 ? `${ageMin} мин` : `${Math.round(ageMin / 60)} ч`;
+  if (ageMs >= STALE_ERROR_MS) {
+    text.textContent = `Данные не обновлялись ${ageLabel} — сборщик, похоже, не работает. Проверьте workflow в GitHub Actions.`;
+  } else {
+    text.textContent = `Данные не обновлялись ${ageLabel} — возможна временная заминка сборщика.`;
+  }
+  banner.style.display = 'flex';
+}
+
 async function init() {
   let recent = [];
   try {
@@ -1252,6 +1318,14 @@ async function init() {
     document.getElementById('live-chart').innerHTML =
       '<div id="status">Не удалось загрузить points.json</div>';
   }
+
+  const lastKnownTs = points.length
+    ? points[points.length - 1].ts
+    : (recent.length ? recent[recent.length - 1].hour + ':00:00Z' : null);
+  checkStaleness(lastKnownTs);
+  // Re-check periodically without a page reload, so a banner appears (or
+  // clears) while the tab is left open rather than only at load time.
+  setInterval(() => checkStaleness(lastKnownTs), 60 * 1000);
 
   let pointsIndex = [];
   try {
