@@ -171,6 +171,11 @@
     gap: 6px;
     margin-left: auto;
   }
+  .trend-controls-label {
+    color: var(--muted);
+    font-size: 12px;
+    margin-right: -2px;
+  }
   .range-btn {
     background: #191c22;
     border: 1px solid var(--line);
@@ -399,7 +404,12 @@
 
   <div class="panel">
     <h2>Общая динамика</h2>
-    <p class="desc">Среднее число игроков по часам за весь собранный период &middot; <span class="legend-swatch" style="background:var(--warn)"></span>пунктир — скользящее среднее за 7 дней</p>
+    <p class="desc">Среднее число игроков по часам за весь собранный период</p>
+    <div class="controls">
+      <span class="legend-swatch" style="background:var(--warn)"></span>
+      <span class="trend-controls-label">Тренд:</span>
+      <div class="range-btns" id="overview-trend-btns"></div>
+    </div>
     <div class="controls">
       <div class="range-btns" id="overview-range-btns"></div>
       <button class="zoom-reset-btn" id="overview-zoom-reset">Сбросить зум</button>
@@ -661,13 +671,15 @@ function setupRangeControls(btnContainer, resetBtn, ranges, state, onChange) {
 }
 
 function movingAverage(values, windowSize) {
-  // Centered simple moving average; returns null where the window would
-  // run off either edge (so the trend line only covers full windows).
-  const half = Math.floor(windowSize / 2);
+  // Trailing (backward-looking) simple moving average: each point is the
+  // average of itself and the windowSize-1 points before it. Unlike a
+  // centered average, this needs data on only one side, so the line
+  // starts as soon as the first full window is available and runs all
+  // the way to the most recent point - no dangling stub in the middle.
   return values.map((_, i) => {
-    if (i < half || i >= values.length - half) return null;
+    if (i < windowSize - 1) return null;
     let sum = 0;
-    for (let j = i - half; j <= i + half; j++) sum += values[j];
+    for (let j = i - windowSize + 1; j <= i; j++) sum += values[j];
     return sum / windowSize;
   });
 }
@@ -675,6 +687,7 @@ function movingAverage(values, windowSize) {
 function renderOverview(rows) {
   const container = document.getElementById('overview-chart');
   const rangeBtns = document.getElementById('overview-range-btns');
+  const trendBtns = document.getElementById('overview-trend-btns');
   const resetBtn = document.getElementById('overview-zoom-reset');
   const zoomSlider = document.getElementById('overview-zoom-slider');
   const posSlider = document.getElementById('overview-pos-slider');
@@ -695,10 +708,53 @@ function renderOverview(rows) {
   const state = { start: 0, end: 1, minWindow: Math.min(1, 6 / totalHours) };
   const slider = setupSliderZoom(zoomSlider, posSlider, state, draw);
 
-  // 7-day trend computed once over the full history so it's smooth and
-  // correct right up to the edges of whatever window the user zooms to.
-  const trendFull = movingAverage(rows.map(r => r.avg), Math.min(rows.length, 24 * 7));
-  const hasTrend = trendFull.some(v => v != null);
+  // Trend window: how many hours of history each point on the dashed
+  // line averages over. "Авто" scales to about a third of the available
+  // history (min 12h, cap 7d) so the line shows up meaningfully even
+  // with only a few days of data; the fixed options are for when the
+  // person wants a specific, comparable window instead.
+  const trendOptions = [
+    { label: 'Авто', hours: null },
+    { label: '1д', hours: 24 },
+    { label: '3д', hours: 24 * 3 },
+    { label: '7д', hours: 24 * 7 },
+    { label: '14д', hours: 24 * 14 }
+  ];
+  let trendFull = [];
+  let hasTrend = false;
+
+  function autoTrendWindow() {
+    return rows.length >= 24 * 14
+      ? 24 * 7
+      : Math.max(12, Math.floor(rows.length / 3));
+  }
+
+  function recomputeTrend(hoursOverride) {
+    const hours = hoursOverride == null ? autoTrendWindow() : hoursOverride;
+    const w = Math.min(rows.length, hours);
+    trendFull = movingAverage(rows.map(r => r.avg), w);
+    hasTrend = trendFull.some(v => v != null);
+  }
+
+  let trendHoursSelected = null; // null = Авто
+  recomputeTrend(trendHoursSelected);
+
+  trendBtns.innerHTML = '';
+  const trendButtons = trendOptions.map(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'range-btn';
+    btn.textContent = opt.label;
+    btn.addEventListener('click', () => {
+      trendButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      trendHoursSelected = opt.hours;
+      recomputeTrend(trendHoursSelected);
+      draw();
+    });
+    trendBtns.appendChild(btn);
+    return btn;
+  });
+  trendButtons[0].classList.add('active'); // Авто by default
 
   function draw() {
     container.innerHTML = '';
@@ -725,6 +781,10 @@ function renderOverview(rows) {
     const path = svgEl('path', { d: pathD(coords), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 });
     svg.appendChild(path);
 
+    const trendLabel = trendHoursSelected == null
+      ? 'тренд (авто)'
+      : 'тренд';
+
     const series = [{
       coords,
       color: 'var(--accent)',
@@ -746,7 +806,7 @@ function renderOverview(rows) {
         color: 'var(--warn)',
         labelFor: i => ({
           value: trendSlice[i] != null ? Math.round(trendSlice[i]) : '—',
-          name: '7д тренд',
+          name: trendLabel,
           sub: slice[i].hour.replace('T', ' ') + ':00 UTC'
         })
       });
