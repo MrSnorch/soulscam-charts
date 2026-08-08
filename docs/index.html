@@ -206,7 +206,7 @@
   .axis-label { fill: var(--muted); font-size: 10px; }
   .gridline { stroke: var(--line); stroke-width: 1; }
 
-  .chart-wrap { position: relative; touch-action: pan-y; }
+  .chart-wrap { position: relative; }
   .chart-wrap.zoomable { cursor: grab; }
   .chart-wrap.zoomable.dragging { cursor: grabbing; }
   .hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3,3; opacity: 0; pointer-events: none; }
@@ -406,14 +406,16 @@ function pathD(coords) {
   return d.trim();
 }
 
-function attachTooltip(wrap, svg, series, xForIndex, count) {
+function attachTooltip(wrap, svg, series, xForIndex, count, overlay) {
   // series: array of { coords, color, labelFor(i) -> {value, sub} }
-  const overlay = svgEl('rect', {
-    x: PAD.left, y: PAD.top,
-    width: W - PAD.left - PAD.right, height: H - PAD.top - PAD.bottom,
-    fill: 'transparent', style: 'cursor: crosshair;'
-  });
-  svg.appendChild(overlay);
+  if (!overlay) {
+    overlay = svgEl('rect', {
+      x: PAD.left, y: PAD.top,
+      width: W - PAD.left - PAD.right, height: H - PAD.top - PAD.bottom,
+      fill: 'transparent', style: 'cursor: crosshair;'
+    });
+    svg.appendChild(overlay);
+  }
 
   const hoverLine = svgEl('line', { class: 'hover-line', x1: 0, x2: 0, y1: PAD.top, y2: H - PAD.bottom });
   svg.appendChild(hoverLine);
@@ -473,31 +475,51 @@ function attachTooltip(wrap, svg, series, xForIndex, count) {
   });
   overlay.addEventListener('mouseleave', hide);
 
-  // touch support
-  overlay.addEventListener('touchmove', (e) => {
-    const touch = e.touches[0];
-    const rect = overlay.getBoundingClientRect();
-    const relX = touch.clientX - rect.left;
-    const frac = Math.max(0, Math.min(1, relX / rect.width));
-    const idx = Math.round(frac * (count - 1));
-    show(idx);
-    e.preventDefault();
-  }, { passive: false });
-  overlay.addEventListener('touchend', hide);
+  // Basic touch support for charts that don't have zoom/pan attached
+  // (attachZoomPan handles touch itself and passes overlay in, so this
+  // only fires standalone when no zoom overlay owns these events).
+  if (!overlay.getAttribute('data-zoom-owned')) {
+    overlay.style.touchAction = 'pan-y';
+    overlay.addEventListener('touchstart', (e) => {
+      const rect = overlay.getBoundingClientRect();
+      const relX = e.touches[0].clientX - rect.left;
+      const frac = Math.max(0, Math.min(1, relX / rect.width));
+      show(Math.round(frac * (count - 1)));
+    }, { passive: true });
+    overlay.addEventListener('touchmove', (e) => {
+      const rect = overlay.getBoundingClientRect();
+      const relX = e.touches[0].clientX - rect.left;
+      const frac = Math.max(0, Math.min(1, relX / rect.width));
+      show(Math.round(frac * (count - 1)));
+      e.preventDefault();
+    }, { passive: false });
+    overlay.addEventListener('touchend', hide);
+  }
+
+  return {
+    show: idx => show(idx),
+    showFrac: frac => show(Math.round(Math.max(0, Math.min(1, frac)) * (count - 1))),
+    hide
+  };
 }
 
 // --- Zoom/pan for time-series line charts -----------------------------
 // Keeps a [startFrac, endFrac] window (0..1) into the full data array and
-// re-renders only that slice. Wheel = zoom around cursor, drag = pan,
-// pinch = zoom on touch devices.
-function attachZoomPan(wrap, svg, state, redraw) {
+// re-renders only that slice.
+// Desktop: wheel = zoom around cursor, drag = pan.
+// Touch: two-finger pinch = zoom, one finger = move the tooltip (panning
+// with one finger would fight with reading the tooltip, so we don't).
+// tooltipApiRef is a plain object whose .current gets set to the tooltip
+// API once attachTooltip runs (it's attached after this, on the same
+// overlay), so touch handlers registered here can still reach it.
+function attachZoomPan(wrap, svg, state, redraw, tooltipApiRef) {
   wrap.classList.add('zoomable');
   const overlay = svgEl('rect', {
     x: PAD.left, y: PAD.top,
     width: W - PAD.left - PAD.right, height: H - PAD.top - PAD.bottom,
-    fill: 'transparent'
+    fill: 'transparent', style: 'cursor: crosshair; touch-action: none;'
   });
-  // insert behind the tooltip overlay (which is appended after this call)
+  overlay.setAttribute('data-zoom-owned', '1');
   svg.appendChild(overlay);
 
   function clampWindow(start, end) {
@@ -530,7 +552,7 @@ function attachZoomPan(wrap, svg, state, redraw) {
     zoomAt(fracX, factor);
   }, { passive: false });
 
-  // drag to pan
+  // drag to pan (mouse)
   let dragging = false, dragStartX = 0, dragStartWin = [0, 1];
   overlay.addEventListener('mousedown', (e) => {
     dragging = true;
@@ -554,20 +576,26 @@ function attachZoomPan(wrap, svg, state, redraw) {
     if (dragging) { dragging = false; wrap.classList.remove('dragging'); }
   });
 
-  // touch: single-finger pan, two-finger pinch zoom
-  let touchStartDist = null, touchStartWin = [0, 1], touchStartX = null;
+  // touch: one finger = tooltip only, two fingers = pinch zoom, two-finger
+  // drag also pans (lets you zoom+reposition in one gesture).
+  let touchStartDist = null, touchStartWin = [0, 1], touchMidXStart = null;
   overlay.addEventListener('touchstart', (e) => {
     if (e.touches.length === 2) {
+      if (tooltipApiRef.current) tooltipApiRef.current.hide();
       touchStartDist = Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY
       );
+      touchMidXStart = (e.touches[0].clientX + e.touches[1].clientX) / 2;
       touchStartWin = [state.start, state.end];
-    } else if (e.touches.length === 1) {
-      touchStartX = e.touches[0].clientX;
-      touchStartWin = [state.start, state.end];
+    } else if (e.touches.length === 1 && tooltipApiRef.current) {
+      const rect = overlay.getBoundingClientRect();
+      const relX = e.touches[0].clientX - rect.left;
+      const frac = Math.max(0, Math.min(1, relX / rect.width));
+      tooltipApiRef.current.showFrac(frac);
     }
   }, { passive: true });
+
   overlay.addEventListener('touchmove', (e) => {
     const rect = overlay.getBoundingClientRect();
     if (e.touches.length === 2 && touchStartDist != null) {
@@ -575,34 +603,37 @@ function attachZoomPan(wrap, svg, state, redraw) {
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY
       );
-      const factor = touchStartDist / Math.max(dist, 1);
       const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const fracX = Math.max(0, Math.min(1, (midX - rect.left) / rect.width));
+      const factor = touchStartDist / Math.max(dist, 1);
+      // zoom anchored at the initial pinch midpoint...
+      const fracX = Math.max(0, Math.min(1, (touchMidXStart - rect.left) / rect.width));
       const abs = touchStartWin[0] + fracX * (touchStartWin[1] - touchStartWin[0]);
       let newLen = (touchStartWin[1] - touchStartWin[0]) * factor;
       newLen = Math.max(state.minWindow, Math.min(1, newLen));
       let newStart = abs - fracX * newLen;
+      // ...then also pan by how far the midpoint has moved
+      const dxFrac = (midX - touchMidXStart) / rect.width;
+      newStart -= dxFrac * newLen;
       let newEnd = newStart + newLen;
       [newStart, newEnd] = clampWindow(newStart, newEnd);
       state.start = newStart;
       state.end = newEnd;
       redraw();
       e.preventDefault();
-    } else if (e.touches.length === 1 && touchStartX != null) {
-      const dxFrac = (e.touches[0].clientX - touchStartX) / rect.width;
-      const len = touchStartWin[1] - touchStartWin[0];
-      let start = touchStartWin[0] - dxFrac * len;
-      let end = start + len;
-      [start, end] = clampWindow(start, end);
-      state.start = start;
-      state.end = end;
-      redraw();
+    } else if (e.touches.length === 1 && tooltipApiRef.current) {
+      const relX = e.touches[0].clientX - rect.left;
+      const frac = Math.max(0, Math.min(1, relX / rect.width));
+      tooltipApiRef.current.showFrac(frac);
       e.preventDefault();
     }
   }, { passive: false });
-  overlay.addEventListener('touchend', () => {
-    touchStartDist = null;
-    touchStartX = null;
+
+  overlay.addEventListener('touchend', (e) => {
+    if (e.touches.length === 0) {
+      touchStartDist = null;
+      touchMidXStart = null;
+      if (tooltipApiRef.current) tooltipApiRef.current.hide();
+    }
   });
 
   return overlay;
@@ -686,15 +717,16 @@ function renderOverview(rows) {
     wrap.appendChild(svg);
     container.appendChild(wrap);
 
-    attachZoomPan(wrap, svg, state, draw);
-    attachTooltip(wrap, svg, [{
+    const tooltipApiRef = {};
+    const overlay = attachZoomPan(wrap, svg, state, draw, tooltipApiRef);
+    tooltipApiRef.current = attachTooltip(wrap, svg, [{
       coords,
       color: 'var(--accent)',
       labelFor: i => ({
         value: slice[i].avg,
         sub: slice[i].hour.replace('T', ' ') + ':00 UTC (max ' + slice[i].max + ', min ' + slice[i].min + ')'
       })
-    }], xForIndex, slice.length);
+    }], xForIndex, slice.length, overlay);
 
     resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
@@ -759,15 +791,16 @@ function renderLive(points) {
     wrap.appendChild(svg);
     container.appendChild(wrap);
 
-    attachZoomPan(wrap, svg, state, draw);
-    attachTooltip(wrap, svg, [{
+    const tooltipApiRef = {};
+    const overlay = attachZoomPan(wrap, svg, state, draw, tooltipApiRef);
+    tooltipApiRef.current = attachTooltip(wrap, svg, [{
       coords,
       color: 'var(--accent)',
       labelFor: i => ({
         value: slice[i].player_count,
         sub: new Date(slice[i].ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
       })
-    }], xForIndex, slice.length);
+    }], xForIndex, slice.length, overlay);
 
     resetBtn.classList.toggle('visible', state.start > 0 || state.end < 1);
   }
