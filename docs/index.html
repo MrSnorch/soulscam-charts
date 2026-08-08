@@ -671,16 +671,21 @@ function setupRangeControls(btnContainer, resetBtn, ranges, state, onChange) {
 }
 
 function movingAverage(values, windowSize) {
-  // Trailing (backward-looking) simple moving average: each point is the
-  // average of itself and the windowSize-1 points before it. Unlike a
-  // centered average, this needs data on only one side, so the line
-  // starts as soon as the first full window is available and runs all
-  // the way to the most recent point - no dangling stub in the middle.
-  return values.map((_, i) => {
-    if (i < windowSize - 1) return null;
-    let sum = 0;
-    for (let j = i - windowSize + 1; j <= i; j++) sum += values[j];
-    return sum / windowSize;
+  // Trailing (backward-looking) simple moving average with an expanding
+  // window at the start: for index i, average over min(windowSize, i+1)
+  // points ending at i, instead of requiring a full window. This is the
+  // standard "min_periods=1" rolling-average behavior (same as pandas'
+  // .rolling().mean()) - each value is still a true average of real
+  // points, just over fewer of them near the left edge where less
+  // history exists. The line covers the whole chart with no gap, and
+  // it's honestly less smoothed right at the start rather than silently
+  // padded with fake data.
+  let sum = 0;
+  return values.map((v, i) => {
+    sum += v;
+    if (i >= windowSize) sum -= values[i - windowSize];
+    const n = Math.min(windowSize, i + 1);
+    return sum / n;
   });
 }
 
