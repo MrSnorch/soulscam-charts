@@ -35,12 +35,13 @@ jobs:
 
           # Commit new data every minute while poll.py runs in the background,
           # so docs/ changes -> Pages redeploys roughly once a minute instead
-          # of once every 5. build-index.py is cheap (just re-reads the
-          # already-written hourly .gz files), so this is safe to run often.
+          # of once every 5. build-index.py caches parsed hourly data in
+          # docs/.recent-cache.json and only re-reads "live" hours/days, so
+          # it stays cheap even run every minute as history grows.
           while kill -0 $POLL_PID 2>/dev/null; do
             sleep 60
             python3 scripts/build-index.py
-            git add docs/hourly/ docs/points-by-day/ docs/recent.json docs/points.json docs/points-index.json
+            git add docs/hourly/ docs/points-by-day/ docs/recent.json docs/points.json docs/points-index.json docs/.recent-cache.json
             git diff --cached --quiet || git commit -m "chore: player count $(date -u +'%Y-%m-%dT%H:%M')"
             git pull --rebase --quiet || true
             git push --quiet || true
@@ -50,7 +51,7 @@ jobs:
 
           # Rebuild the dashboard's aggregate and commit anything flushed at the end.
           python3 scripts/build-index.py
-          git add docs/hourly/ docs/points-by-day/ docs/recent.json docs/points.json docs/points-index.json
+          git add docs/hourly/ docs/points-by-day/ docs/recent.json docs/points.json docs/points-index.json docs/.recent-cache.json
           git diff --cached --quiet || git commit -m "chore: player count $(date -u +'%Y-%m-%dT%H:%M') (final)"
           git pull --rebase --quiet || true
           git push --quiet || true
